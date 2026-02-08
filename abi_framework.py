@@ -1848,8 +1848,16 @@ def parse_nm_exports(output: str) -> list[str]:
         parts = line.split()
         if len(parts) < 2:
             continue
+        type_code = parts[-2]
         symbol = parts[-1]
         if symbol in {"|", "<"}:
+            continue
+        if len(type_code) != 1:
+            continue
+        # nm uses lowercase for local symbols (except GNU unique "u").
+        if type_code == "U":
+            continue
+        if not (type_code.isupper() or type_code == "u"):
             continue
         exports.add(symbol)
     return sorted(exports)
@@ -1868,18 +1876,24 @@ def parse_dumpbin_exports(output: str) -> list[str]:
 
 def parse_readelf_exports(output: str) -> list[str]:
     exports: set[str] = set()
-    pattern = re.compile(
-        r"^\s*\d+:\s+[0-9A-Fa-f]+\s+\d+\s+\w+\s+\w+\s+\w+\s+(?P<section>\w+)\s+(?P<name>\S+)$"
-    )
     for raw_line in output.splitlines():
         line = raw_line.rstrip()
-        match = pattern.match(line)
-        if not match:
+        parts = line.split()
+        if len(parts) < 8:
             continue
-        section = match.group("section")
+        number_token = parts[0]
+        if not number_token.endswith(":") or not number_token[:-1].isdigit():
+            continue
+        bind = parts[4].upper()
+        visibility = parts[5].upper()
+        section = parts[6].upper()
+        name = parts[7]
         if section == "UND":
             continue
-        name = match.group("name")
+        if bind not in {"GLOBAL", "WEAK", "GNU_UNIQUE", "UNIQUE"}:
+            continue
+        if visibility in {"HIDDEN", "INTERNAL"}:
+            continue
         if name and name != "0":
             exports.add(name)
     return sorted(exports)
@@ -1891,10 +1905,16 @@ def parse_objdump_exports(output: str) -> list[str]:
         line = raw_line.strip()
         if not line:
             continue
-        if not re.match(r"^[0-9A-Fa-f]+", line):
-            continue
         parts = line.split()
-        if len(parts) < 6:
+        if len(parts) < 7:
+            continue
+        if not re.fullmatch(r"[0-9A-Fa-f]+", parts[0]):
+            continue
+        binding = parts[1].lower()
+        if binding not in {"g", "w", "u"}:
+            continue
+        section = parts[3]
+        if section == "*UND*":
             continue
         name = parts[-1]
         if name and name != "*UND*":
@@ -1995,7 +2015,7 @@ def extract_binary_exports(binary_path: Path, symbol_prefix: str, allow_non_pref
             tool_errors.append(f"{' '.join(command)}: {message}")
             continue
         parsed_exports = parse_exports_with_format(proc.stdout, parse_format=parse_format)
-        raw_exports.update(parsed_exports)
+        raw_exports = set(parsed_exports)
         tools_info.append(
             {
                 "tool": tool_name,
@@ -2004,6 +2024,9 @@ def extract_binary_exports(binary_path: Path, symbol_prefix: str, allow_non_pref
                 "export_count": len(parsed_exports),
             }
         )
+        # Command specs are ordered by preference; use the first successful tool
+        # to avoid mixing parser-specific interpretations of symbol tables.
+        break
 
     if not tools_info:
         if tool_errors:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -327,6 +328,69 @@ MY_API int MY_CALL my_add(int a, int b);
         self.assertEqual(meta["compiler_selected"], "clang-18")
         self.assertEqual(meta["compiler_requested"], "clang-does-not-exist")
         self.assertIn("clang-does-not-exist", meta["compiler_candidates"])
+
+    def test_parse_readelf_exports_filters_non_exports(self) -> None:
+        readelf_output = """
+Symbol table '.dynsym' contains 6 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND
+     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND _Znam@GLIBCXX_3.4
+     2: 0000000000001234    16 FUNC    GLOBAL DEFAULT   12 lrtc_ok
+     3: 0000000000001244    16 FUNC    LOCAL  DEFAULT   12 _ZLhelper
+     4: 0000000000001254    16 FUNC    WEAK   DEFAULT   12 lrtc_weak
+     5: 0000000000001264    16 FUNC    GLOBAL HIDDEN    12 hidden_symbol
+""".strip()
+        exports = abi_framework.parse_readelf_exports(readelf_output)
+        self.assertEqual(exports, ["lrtc_ok", "lrtc_weak"])
+
+    def test_parse_objdump_exports_filters_non_exports(self) -> None:
+        objdump_output = """
+0000000000000000      DF *UND*  0000000000000000  Base        strlen
+0000000000001234 g    DF .text  0000000000000010  Base        lrtc_ok
+0000000000001244 l    DF .text  0000000000000010  Base        _ZLhelper
+0000000000001254 w    DF .text  0000000000000010  Base        lrtc_weak
+0000000000001264 u    DF .text  0000000000000010  Base        lrtc_unique
+""".strip()
+        exports = abi_framework.parse_objdump_exports(objdump_output)
+        self.assertEqual(exports, ["lrtc_ok", "lrtc_unique", "lrtc_weak"])
+
+    def test_extract_binary_exports_uses_first_successful_tool(self) -> None:
+        binary_path = self.repo_root / "native" / "libdummy.so"
+        binary_path.parent.mkdir(parents=True, exist_ok=True)
+        binary_path.write_bytes(b"\x7fELF")
+
+        command_specs = [
+            ("nm", ["nm", "-D", "--defined-only", str(binary_path)], "nm"),
+            ("readelf", ["readelf", "-Ws", str(binary_path)], "readelf"),
+        ]
+
+        with mock.patch.object(abi_framework, "build_export_command_specs", return_value=command_specs):
+            with mock.patch.object(abi_framework.shutil, "which", return_value="/usr/bin/fake-tool"):
+                run_results = [
+                    subprocess.CompletedProcess(
+                        args=command_specs[0][1],
+                        returncode=0,
+                        stdout="0000000000001234 T lrtc_only\n",
+                        stderr="",
+                    ),
+                    subprocess.CompletedProcess(
+                        args=command_specs[1][1],
+                        returncode=0,
+                        stdout="   1: 0000000000001244 16 FUNC GLOBAL DEFAULT 12 should_not_be_used\n",
+                        stderr="",
+                    ),
+                ]
+                with mock.patch.object(abi_framework.subprocess, "run", side_effect=run_results) as run_mock:
+                    payload = abi_framework.extract_binary_exports(
+                        binary_path=binary_path,
+                        symbol_prefix="lrtc_",
+                        allow_non_prefixed_exports=False,
+                    )
+
+        self.assertEqual(run_mock.call_count, 1)
+        self.assertEqual(payload["symbols"], ["lrtc_only"])
+        self.assertEqual(payload["raw_export_count"], 1)
+        self.assertEqual(payload["tool"], "nm -D --defined-only " + str(binary_path))
 
     def test_codegen_external_generator(self) -> None:
         config_path = self.repo_root / "abi" / "config.json"
