@@ -14,7 +14,10 @@
   - `additive`
   - `breaking`
 - Enforces ABI semantic-version policy from header macros.
-- Generates ABI IDL JSON from the ABI header.
+- Generates ABI IDL JSON from the ABI header (schema v2).
+- Runs language generator plugins from config (`bindings.generators`).
+- Supports parser backends (`regex`, `clang_preprocess`) for ABI extraction.
+- Supports policy rules and TTL-based waivers.
 - Supports multi-target configs, changelog output, SARIF output, and release pipeline orchestration.
 
 ## Core commands
@@ -48,11 +51,31 @@ python3 tools/abi_framework/abi_framework.py generate \
   --config abi/config.json \
   --skip-binary
 
+# Run full codegen (IDL + configured generators)
+python3 tools/abi_framework/abi_framework.py codegen \
+  --repo-root . \
+  --config abi/config.json \
+  --skip-binary \
+  --check
+
+# Migrate IDL payload to schema v2
+python3 tools/abi_framework/abi_framework.py idl-migrate \
+  --input abi/generated/lumenrtc/lumenrtc.idl.json \
+  --to-version 2
+
 # Sync generated ABI artifacts and optionally baselines
 python3 tools/abi_framework/abi_framework.py sync \
   --repo-root . \
   --config abi/config.json \
   --skip-binary
+
+# Benchmark ABI pipeline
+python3 tools/abi_framework/abi_framework.py benchmark \
+  --repo-root . \
+  --config abi/config.json \
+  --skip-binary \
+  --iterations 3 \
+  --output artifacts/abi/benchmark.report.json
 
 # End-to-end release preparation pipeline
 python3 tools/abi_framework/abi_framework.py release-prepare \
@@ -79,10 +102,55 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
           "major": "MY_ABI_VERSION_MAJOR",
           "minor": "MY_ABI_VERSION_MINOR",
           "patch": "MY_ABI_VERSION_PATCH"
+        },
+        "parser": {
+          "backend": "clang_preprocess",
+          "compiler": "clang",
+          "args": ["-D_GNU_SOURCE"],
+          "include_dirs": ["native/include"],
+          "fallback_to_regex": true
         }
       },
+      "policy": {
+        "max_allowed_classification": "breaking",
+        "rules": [
+          {
+            "id": "no_removed_symbols",
+            "severity": "error",
+            "message": "Removing symbols is prohibited.",
+            "when": { "removed_symbols_count_gt": 0 }
+          }
+        ],
+        "waivers": [
+          {
+            "id": "temporary-known-drift",
+            "severity": "warning",
+            "pattern": "known non-critical warning",
+            "targets": ["^my_target$"],
+            "expires_utc": "2026-12-31T00:00:00Z",
+            "owner": "team-abi",
+            "reason": "Temporary upstream transition"
+          }
+        ]
+      },
       "bindings": {
-        "expected_symbols": ["my_init", "my_shutdown"]
+        "expected_symbols": ["my_init", "my_shutdown"],
+        "symbol_docs": {
+          "my_init": "Initializes runtime state."
+        },
+        "deprecated_symbols": ["my_shutdown"],
+        "generators": [
+          {
+            "name": "csharp",
+            "kind": "builtin",
+            "builtin": "csharp-roslyn",
+            "enabled": true,
+            "options": {
+              "output_path": "abi/generated/my_target/NativeMethods.g.cs",
+              "namespace": "MyTarget.Interop"
+            }
+          }
+        ]
       },
       "binary": {
         "path": "native/build/libmyapi.so",
@@ -90,6 +158,7 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
       },
       "codegen": {
         "enabled": true,
+        "idl_schema_version": 2,
         "idl_output_path": "abi/generated/my_target/my_target.idl.json",
         "include_symbols_regex": ["^my_"],
         "exclude_symbols": []
@@ -102,8 +171,8 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
 Notes:
 
 - `bindings.expected_symbols` is optional but recommended.
-- `codegen` in `abi_framework` is only about ABI IDL generation.
-- Language-specific code generation (for example C#) should be done by separate tools that consume the generated IDL.
+- `codegen` command runs IDL generation plus configured language generators.
+- `generate` command generates IDL only.
 
 ## Wrapper scripts
 
@@ -117,7 +186,10 @@ Both wrappers expose:
 - `baseline-all`
 - `regen` / `regen-baselines`
 - `doctor`
+- `benchmark`
 - `generate`
+- `codegen`
+- `idl-migrate`
 - `sync`
 - `release-prepare`
 - `changelog`

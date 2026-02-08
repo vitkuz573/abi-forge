@@ -15,7 +15,15 @@
           "enum": ["none", "additive", "breaking"]
         },
         "fail_on_warnings": { "type": "boolean" },
-        "require_layout_probe": { "type": "boolean" }
+        "require_layout_probe": { "type": "boolean" },
+        "rules": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "waivers": {
+          "type": "array",
+          "items": { "type": "object" }
+        }
       }
     },
     "targets": {
@@ -36,7 +44,15 @@
                 "enum": ["none", "additive", "breaking"]
               },
               "fail_on_warnings": { "type": "boolean" },
-              "require_layout_probe": { "type": "boolean" }
+              "require_layout_probe": { "type": "boolean" },
+              "rules": {
+                "type": "array",
+                "items": { "type": "object" }
+              },
+              "waivers": {
+                "type": "array",
+                "items": { "type": "object" }
+              }
             }
           },
           "header": {
@@ -80,6 +96,17 @@
                   "cflags": { "type": "array", "items": { "type": "string" } },
                   "include_dirs": { "type": "array", "items": { "type": "string" } }
                 }
+              },
+              "parser": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "backend": { "type": "string", "enum": ["regex", "clang_preprocess"] },
+                  "compiler": { "type": "string" },
+                  "args": { "type": "array", "items": { "type": "string" } },
+                  "include_dirs": { "type": "array", "items": { "type": "string" } },
+                  "fallback_to_regex": { "type": "boolean" }
+                }
               }
             }
           },
@@ -90,6 +117,18 @@
               "expected_symbols": {
                 "type": "array",
                 "items": { "type": "string", "minLength": 1 }
+              },
+              "symbol_docs": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              },
+              "deprecated_symbols": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "generators": {
+                "type": "array",
+                "items": { "type": "object" }
               }
             }
           },
@@ -106,6 +145,7 @@
             "additionalProperties": true,
             "properties": {
               "enabled": { "type": "boolean" },
+              "idl_schema_version": { "type": "integer", "minimum": 1 },
               "idl_output_path": { "type": "string", "minLength": 1 },
               "include_symbols": { "type": "array", "items": { "type": "string", "minLength": 1 } },
               "exclude_symbols": { "type": "array", "items": { "type": "string", "minLength": 1 } },

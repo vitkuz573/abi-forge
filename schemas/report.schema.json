@@ -39,6 +39,9 @@
     "errors": { "type": "array", "items": { "type": "string" } },
     "warnings": { "type": "array", "items": { "type": "string" } },
     "breaking_reasons": { "type": "array", "items": { "type": "string" } },
-    "additive_reasons": { "type": "array", "items": { "type": "string" } }
+    "additive_reasons": { "type": "array", "items": { "type": "string" } },
+    "policy": { "type": "object" },
+    "policy_rules_applied": { "type": "array", "items": { "type": "object" } },
+    "waivers_applied": { "type": "array", "items": { "type": "object" } }
   }
 }

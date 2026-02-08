@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -192,6 +193,202 @@ MY_API int MY_CALL my_add(int a, int b);
         self.assertEqual(exit_code, 0)
         self.assertTrue((output_dir / "release.prepare.report.json").exists())
         self.assertTrue(changelog_path.exists())
+
+    def test_policy_rules_and_waivers(self) -> None:
+        baseline = make_snapshot((1, 0, 0), {"my_init": "void", "my_add": "int a, int b"})
+        current = make_snapshot((2, 0, 0), {"my_init": "void"})
+        raw_report = abi_framework.compare_snapshots(baseline=baseline, current=current)
+
+        config = {
+            "targets": {
+                "demo": {
+                    "policy": {
+                        "rules": [
+                            {
+                                "id": "no_removed_symbols",
+                                "severity": "error",
+                                "message": "no symbol removals allowed",
+                                "when": {"removed_symbols_count_gt": 0},
+                            }
+                        ],
+                        "waivers": [
+                            {
+                                "id": "temporary-waive-removal",
+                                "severity": "error",
+                                "pattern": "no symbol removals allowed",
+                                "targets": ["^demo$"],
+                                "expires_utc": "2099-01-01T00:00:00Z",
+                                "owner": "test",
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+
+        effective_policy = abi_framework.resolve_effective_policy(config=config, target_name="demo")
+        report = abi_framework.apply_policy_to_report(
+            report=raw_report,
+            policy=effective_policy,
+            target_name="demo",
+        )
+
+        self.assertEqual(report["status"], "pass")
+        self.assertTrue(report.get("policy_rules_applied"))
+        self.assertTrue(report.get("waivers_applied"))
+        self.assertFalse(report.get("errors"))
+
+    def test_parser_backend_fallback(self) -> None:
+        header_path = self.repo_root / "native" / "include" / "demo.h"
+        type_policy = abi_framework.build_type_policy(
+            {
+                "types": {
+                    "enable_enums": True,
+                    "enable_structs": True,
+                    "enum_name_pattern": "^my_",
+                    "struct_name_pattern": "^my_",
+                    "ignore_enums": [],
+                    "ignore_structs": [],
+                    "struct_tail_addition_is_breaking": True,
+                }
+            },
+            "my_",
+        )
+        version_macros = {
+            "major": "MY_ABI_VERSION_MAJOR",
+            "minor": "MY_ABI_VERSION_MINOR",
+            "patch": "MY_ABI_VERSION_PATCH",
+        }
+
+        header_payload, abi_version, parser_info = abi_framework.parse_c_header(
+            header_path=header_path,
+            api_macro="MY_API",
+            call_macro="MY_CALL",
+            symbol_prefix="my_",
+            version_macros=version_macros,
+            type_policy=type_policy,
+            parser_cfg={
+                "backend": "clang_preprocess",
+                "compiler": "definitely-not-a-real-compiler",
+                "fallback_to_regex": True,
+            },
+        )
+        self.assertEqual(abi_version.major, 1)
+        self.assertTrue(header_payload["function_count"] >= 2)
+        self.assertEqual(parser_info["backend"], "regex")
+        self.assertTrue(parser_info["fallback_used"])
+
+        with self.assertRaises(abi_framework.AbiFrameworkError):
+            abi_framework.parse_c_header(
+                header_path=header_path,
+                api_macro="MY_API",
+                call_macro="MY_CALL",
+                symbol_prefix="my_",
+                version_macros=version_macros,
+                type_policy=type_policy,
+                parser_cfg={
+                    "backend": "clang_preprocess",
+                    "compiler": "definitely-not-a-real-compiler",
+                    "fallback_to_regex": False,
+                },
+            )
+
+    def test_codegen_external_generator(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        config = abi_framework.load_json(config_path)
+        target = config["targets"]["demo"]
+
+        marker_path = self.repo_root / "artifacts" / "generator.marker"
+        script_path = self.repo_root / "tools" / "stub_generator.py"
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(
+            "import pathlib\n"
+            "import sys\n"
+            "idl = pathlib.Path(sys.argv[1])\n"
+            "out = pathlib.Path(sys.argv[2])\n"
+            "out.parent.mkdir(parents=True, exist_ok=True)\n"
+            "out.write_text('generated:' + idl.read_text(encoding='utf-8')[:32], encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+
+        target["bindings"]["generators"] = [
+            {
+                "name": "stub",
+                "kind": "external",
+                "command": [sys.executable, str(script_path), "{idl}", str(marker_path)],
+            }
+        ]
+        abi_framework.write_json(config_path, config)
+
+        exit_code = abi_framework.command_codegen(
+            argparse.Namespace(
+                repo_root=str(self.repo_root),
+                config=str(config_path),
+                target="demo",
+                binary=None,
+                skip_binary=True,
+                idl_output=None,
+                dry_run=False,
+                check=False,
+                print_diff=False,
+                report_json=str(self.repo_root / "artifacts" / "codegen.json"),
+                fail_on_sync=False,
+            )
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(marker_path.exists())
+
+    def test_benchmark_command(self) -> None:
+        output_path = self.repo_root / "artifacts" / "benchmark.json"
+        exit_code = abi_framework.command_benchmark(
+            argparse.Namespace(
+                repo_root=str(self.repo_root),
+                config=str(self.repo_root / "abi" / "config.json"),
+                target="demo",
+                baseline_root=None,
+                binary=None,
+                skip_binary=True,
+                iterations=1,
+                output=str(output_path),
+            )
+        )
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertIn("targets", payload)
+        self.assertIn("demo", payload["targets"])
+
+    def test_idl_migrate_command(self) -> None:
+        input_path = self.repo_root / "abi" / "generated" / "legacy.idl.json"
+        output_path = self.repo_root / "abi" / "generated" / "legacy.v2.idl.json"
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        input_payload = {
+            "tool": {"name": "abi_framework", "version": "legacy"},
+            "target": "demo",
+            "abi_version": {"major": 1, "minor": 0, "patch": 0},
+            "functions": [
+                {
+                    "name": "my_init",
+                    "c_return_type": "int",
+                    "parameters": [],
+                    "stable_id": "x",
+                }
+            ],
+        }
+        input_path.write_text(json.dumps(input_payload, indent=2) + "\n", encoding="utf-8")
+
+        exit_code = abi_framework.command_idl_migrate(
+            argparse.Namespace(
+                input=str(input_path),
+                output=str(output_path),
+                target="demo",
+                to_version=2,
+                check=False,
+            )
+        )
+        self.assertEqual(exit_code, 0)
+        migrated = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["idl_schema_version"], 2)
+        self.assertEqual(migrated["idl_schema"], abi_framework.IDL_SCHEMA_URI_V2)
 
 
 if __name__ == "__main__":

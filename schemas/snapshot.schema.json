@@ -47,7 +47,8 @@
         },
         "enum_count": { "type": "integer", "minimum": 0 },
         "struct_count": { "type": "integer", "minimum": 0 },
-        "layout_probe": { "type": "object" }
+        "layout_probe": { "type": "object" },
+        "parser": { "type": "object" }
       }
     },
     "bindings": {
@@ -65,7 +66,12 @@
       "properties": {
         "available": { "type": "boolean" },
         "symbol_count": { "type": "integer", "minimum": 0 },
-        "symbols": { "type": "array", "items": { "type": "string" } }
+        "symbols": { "type": "array", "items": { "type": "string" } },
+        "tool": { "type": ["string", "null"] },
+        "tools": { "type": "array", "items": { "type": "object" } },
+        "export_tool_errors": { "type": "array", "items": { "type": "string" } },
+        "decorated_export_count": { "type": "integer", "minimum": 0 },
+        "potential_calling_convention_mismatch": { "type": "boolean" }
       }
     }
   }

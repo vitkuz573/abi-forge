@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lumenrtc.dev/abi_framework/idl.schema.v2.json",
+  "title": "abi_framework IDL v2",
+  "type": "object",
+  "required": [
+    "idl_schema_version",
+    "idl_schema",
+    "tool",
+    "target",
+    "abi_version",
+    "functions"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "idl_schema_version": { "type": "integer", "const": 2 },
+    "idl_schema": { "type": "string", "minLength": 1 },
+    "tool": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "generated_at_utc": { "type": "string" },
+    "target": { "type": "string", "minLength": 1 },
+    "abi_version": {
+      "type": "object",
+      "required": ["major", "minor", "patch"],
+      "properties": {
+        "major": { "type": "integer" },
+        "minor": { "type": "integer" },
+        "patch": { "type": "integer" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "header_path": { "type": "string" },
+        "parser_backend": { "type": ["string", "null"] }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "function_count": { "type": "integer", "minimum": 0 },
+        "enum_count": { "type": "integer", "minimum": 0 },
+        "struct_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "functions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "c_return_type", "parameters", "stable_id"],
+        "additionalProperties": true,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "c_return_type": { "type": "string", "minLength": 1 },
+          "c_parameters_raw": { "type": "string" },
+          "documentation": { "type": "string" },
+          "deprecated": { "type": "boolean" },
+          "availability": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "since_abi": { "type": "string" }
+            }
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "c_type"],
+              "additionalProperties": true,
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "c_type": { "type": "string", "minLength": 1 },
+                "pointer_depth": { "type": "integer", "minimum": 0 },
+                "variadic": { "type": "boolean" }
+              }
+            }
+          },
+          "stable_id": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
