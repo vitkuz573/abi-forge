@@ -93,6 +93,49 @@ def normalize_ws(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def strip_c_decl_attributes(value: str) -> str:
+    text = value
+
+    def _strip_balanced_macro_calls(payload: str, token_pattern: str) -> str:
+        out = payload
+        token_re = re.compile(token_pattern)
+        while True:
+            match = token_re.search(out)
+            if not match:
+                break
+            open_idx = out.find("(", match.end())
+            if open_idx < 0:
+                out = f"{out[:match.start()]} {out[match.end():]}"
+                continue
+            depth = 0
+            end_idx = None
+            for idx in range(open_idx, len(out)):
+                ch = out[idx]
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        end_idx = idx + 1
+                        break
+            if end_idx is None:
+                out = f"{out[:match.start()]} {out[match.end():]}"
+                continue
+            out = f"{out[:match.start()]} {out[end_idx:]}"
+        return out
+
+    text = _strip_balanced_macro_calls(text, r"\b__attribute__\b")
+    text = _strip_balanced_macro_calls(text, r"\b__declspec\b")
+    text = re.sub(r"\b(?:__cdecl|__stdcall|__fastcall|__vectorcall|__thiscall)\b", " ", text)
+    return normalize_ws(text)
+
+
+def sanitize_c_decl_text(value: str) -> str:
+    text = strip_c_decl_attributes(value)
+    text = re.sub(r"\b_Bool\b", "bool", text)
+    return normalize_ws(text)
+
+
 def strip_c_comments(content: str) -> str:
     content = re.sub(r"/\*.*?\*/", "", content, flags=re.S)
     content = re.sub(r"//.*?$", "", content, flags=re.M)
@@ -877,6 +920,8 @@ def split_struct_declarations(body: str) -> list[str]:
 
 
 def parse_struct_field(decl: str, index: int) -> dict[str, str]:
+    decl = sanitize_c_decl_text(decl)
+
     function_ptr = re.search(r"\(\s*\*\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\(", decl)
     if function_ptr:
         name = function_ptr.group("name")
@@ -1014,9 +1059,9 @@ def parse_c_header(
         name = match.group("name")
         if symbol_prefix and not name.startswith(symbol_prefix):
             continue
-        return_type = normalize_ws(match.group("ret"))
+        return_type = sanitize_c_decl_text(match.group("ret"))
         return_type = re.sub(r"^\s*extern\s+", "", return_type)
-        params = normalize_ws(match.group("params"))
+        params = sanitize_c_decl_text(match.group("params"))
         signature = f"{return_type} ({params})"
         functions[name] = {
             "return_type": return_type,
@@ -1046,7 +1091,7 @@ def parse_c_header(
 
 
 def normalize_c_type(value: str) -> str:
-    text = normalize_ws(value)
+    text = sanitize_c_decl_text(value)
     text = re.sub(r"\s*\*\s*", "*", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text

@@ -297,6 +297,14 @@ MY_API int MY_CALL my_add(int a, int b);
                     },
                 )
 
+    def test_sanitize_c_decl_text_strips_attributes(self) -> None:
+        raw = '__attribute__((visibility("default"))) __cdecl _Bool * value'
+        sanitized = abi_framework.sanitize_c_decl_text(raw)
+        normalized = abi_framework.normalize_c_type(raw)
+
+        self.assertEqual(sanitized, "bool * value")
+        self.assertEqual(normalized, "bool*value")
+
     def test_resolve_parser_compiler_uses_candidates(self) -> None:
         parser_cfg = {
             "backend": "clang_preprocess",
