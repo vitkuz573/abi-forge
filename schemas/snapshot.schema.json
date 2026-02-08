@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lumenrtc.dev/abi_framework/snapshot.schema.json",
+  "title": "abi_framework snapshot",
+  "type": "object",
+  "required": ["tool", "target", "generated_at_utc", "abi_version", "header", "bindings", "binary"],
+  "additionalProperties": true,
+  "properties": {
+    "tool": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "target": { "type": "string" },
+    "generated_at_utc": { "type": "string" },
+    "abi_version": {
+      "type": "object",
+      "required": ["major", "minor", "patch"],
+      "properties": {
+        "major": { "type": "integer" },
+        "minor": { "type": "integer" },
+        "patch": { "type": "integer" }
+      }
+    },
+    "header": {
+      "type": "object",
+      "required": ["function_count", "symbols", "functions"],
+      "additionalProperties": true,
+      "properties": {
+        "path": { "type": "string" },
+        "function_count": { "type": "integer", "minimum": 0 },
+        "symbols": { "type": "array", "items": { "type": "string" } },
+        "functions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "return_type": { "type": "string" },
+              "parameters": { "type": "string" },
+              "signature": { "type": "string" }
+            }
+          }
+        },
+        "enum_count": { "type": "integer", "minimum": 0 },
+        "struct_count": { "type": "integer", "minimum": 0 },
+        "layout_probe": { "type": "object" }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "required": ["symbol_count", "symbols"],
+      "additionalProperties": true,
+      "properties": {
+        "symbol_count": { "type": "integer", "minimum": 0 },
+        "symbols": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "binary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "available": { "type": "boolean" },
+        "symbol_count": { "type": "integer", "minimum": 0 },
+        "symbols": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

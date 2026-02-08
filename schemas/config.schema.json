@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lumenrtc.dev/abi_framework/config.schema.json",
+  "title": "abi_framework config",
+  "type": "object",
+  "required": ["targets"],
+  "additionalProperties": true,
+  "properties": {
+    "policy": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "max_allowed_classification": {
+          "type": "string",
+          "enum": ["none", "additive", "breaking"]
+        },
+        "fail_on_warnings": { "type": "boolean" },
+        "require_layout_probe": { "type": "boolean" }
+      }
+    },
+    "targets": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["header"],
+        "additionalProperties": true,
+        "properties": {
+          "baseline_path": { "type": "string", "minLength": 1 },
+          "policy": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "max_allowed_classification": {
+                "type": "string",
+                "enum": ["none", "additive", "breaking"]
+              },
+              "fail_on_warnings": { "type": "boolean" },
+              "require_layout_probe": { "type": "boolean" }
+            }
+          },
+          "header": {
+            "type": "object",
+            "required": ["path", "api_macro", "call_macro", "symbol_prefix", "version_macros"],
+            "additionalProperties": true,
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "api_macro": { "type": "string", "minLength": 1 },
+              "call_macro": { "type": "string", "minLength": 1 },
+              "symbol_prefix": { "type": "string", "minLength": 1 },
+              "version_macros": {
+                "type": "object",
+                "required": ["major", "minor", "patch"],
+                "additionalProperties": true,
+                "properties": {
+                  "major": { "type": "string", "minLength": 1 },
+                  "minor": { "type": "string", "minLength": 1 },
+                  "patch": { "type": "string", "minLength": 1 }
+                }
+              },
+              "types": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "enable_enums": { "type": "boolean" },
+                  "enable_structs": { "type": "boolean" },
+                  "enum_name_pattern": { "type": "string" },
+                  "struct_name_pattern": { "type": "string" },
+                  "ignore_enums": { "type": "array", "items": { "type": "string" } },
+                  "ignore_structs": { "type": "array", "items": { "type": "string" } },
+                  "struct_tail_addition_is_breaking": { "type": "boolean" }
+                }
+              },
+              "layout": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "enable": { "type": "boolean" },
+                  "compiler": { "type": "string" },
+                  "cflags": { "type": "array", "items": { "type": "string" } },
+                  "include_dirs": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "bindings": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "expected_symbols": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              }
+            }
+          },
+          "binary": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "allow_non_prefixed_exports": { "type": "boolean" }
+            }
+          },
+          "codegen": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "idl_output_path": { "type": "string", "minLength": 1 },
+              "include_symbols": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+              "exclude_symbols": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+              "include_symbols_regex": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+              "exclude_symbols_regex": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+            }
+          }
+        }
+      }
+    }
+  }
+}

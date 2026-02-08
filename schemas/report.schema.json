@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lumenrtc.dev/abi_framework/report.schema.json",
+  "title": "abi_framework compare report",
+  "type": "object",
+  "required": ["status", "change_classification", "required_bump", "errors", "warnings"],
+  "additionalProperties": true,
+  "properties": {
+    "status": { "type": "string", "enum": ["pass", "fail"] },
+    "change_classification": { "type": "string", "enum": ["none", "additive", "breaking"] },
+    "required_bump": { "type": "string", "enum": ["none", "minor", "major"] },
+    "baseline_abi_version": {
+      "type": "object",
+      "required": ["major", "minor", "patch"],
+      "properties": {
+        "major": { "type": "integer" },
+        "minor": { "type": "integer" },
+        "patch": { "type": "integer" }
+      }
+    },
+    "current_abi_version": {
+      "type": "object",
+      "required": ["major", "minor", "patch"],
+      "properties": {
+        "major": { "type": "integer" },
+        "minor": { "type": "integer" },
+        "patch": { "type": "integer" }
+      }
+    },
+    "recommended_next_version": {
+      "type": "object",
+      "required": ["major", "minor", "patch"],
+      "properties": {
+        "major": { "type": "integer" },
+        "minor": { "type": "integer" },
+        "patch": { "type": "integer" }
+      }
+    },
+    "errors": { "type": "array", "items": { "type": "string" } },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "breaking_reasons": { "type": "array", "items": { "type": "string" } },
+    "additive_reasons": { "type": "array", "items": { "type": "string" } }
+  }
+}
