@@ -15,6 +15,9 @@
   - `breaking`
 - Enforces ABI semantic-version policy from header macros.
 - Generates ABI IDL JSON from the ABI header (schema v2).
+- Can generate native ABI artifacts from IDL:
+  - C header (`native/include/...`)
+  - linker export map (`.map`)
 - Runs language generator plugins from config (`bindings.generators`).
 - Supports parser backends (`regex`, `clang_preprocess`) for ABI extraction.
 - Supports policy rules and TTL-based waivers.
@@ -162,6 +165,14 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
         "enabled": true,
         "idl_schema_version": 2,
         "idl_output_path": "abi/generated/my_target/my_target.idl.json",
+        "native_header_output_path": "native/include/my_api.h",
+        "native_export_map_output_path": "native/my_api.map",
+        "native_header_guard": "MY_API_H",
+        "native_api_macro": "MY_API",
+        "native_call_macro": "MY_CALL",
+        "native_constants": {
+          "MY_CONST_LIMIT": "16"
+        },
         "include_symbols_regex": ["^my_"],
         "exclude_symbols": []
       }
@@ -174,6 +185,8 @@ Notes:
 
 - `bindings.expected_symbols` is optional but recommended.
 - `codegen` command runs IDL generation plus configured language generators.
+- If `codegen.native_header_output_path`/`codegen.native_export_map_output_path` are set,
+  `generate`/`codegen`/`sync` also refresh native ABI artifacts from IDL.
 - `generate` command generates IDL only.
 - `header.parser.compiler_candidates` lets parser auto-pick the first available clang binary.
 - Environment override `ABI_CLANG` can force a specific clang executable path.

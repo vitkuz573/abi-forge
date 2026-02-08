@@ -392,6 +392,84 @@ Symbol table '.dynsym' contains 6 entries:
         self.assertEqual(payload["raw_export_count"], 1)
         self.assertEqual(payload["tool"], "nm -D --defined-only " + str(binary_path))
 
+    def test_extract_header_auxiliary_types_and_constants(self) -> None:
+        header_text = """
+#define LRTC_MAX_ICE_SERVERS 8
+#define LRTC_BUFFER_SIZE (4 * 1024)
+typedef struct lrtc_factory_t lrtc_factory_t;
+typedef struct lrtc_peer_connection_t lrtc_peer_connection_t;
+typedef void (LUMENRTC_CALL *lrtc_log_message_cb)(void* user_data, const char* message);
+typedef void (LUMENRTC_CALL *lrtc_void_cb)(void* user_data);
+""".strip()
+
+        opaque = abi_framework.extract_opaque_struct_typedefs(header_text, symbol_prefix="lrtc_")
+        callbacks = abi_framework.extract_callback_typedefs(
+            header_text,
+            symbol_prefix="lrtc_",
+            call_macro="LUMENRTC_CALL",
+        )
+        constants = abi_framework.extract_prefixed_define_constants(header_text, macro_prefix="LRTC_")
+
+        self.assertEqual([item["name"] for item in opaque], ["lrtc_factory_t", "lrtc_peer_connection_t"])
+        self.assertEqual([item["name"] for item in callbacks], ["lrtc_log_message_cb", "lrtc_void_cb"])
+        self.assertEqual(constants, {"LRTC_BUFFER_SIZE": "(4 * 1024)", "LRTC_MAX_ICE_SERVERS": "8"})
+
+    def test_render_native_header_and_export_map_from_idl(self) -> None:
+        idl_payload = {
+            "target": "demo",
+            "abi_version": {"major": 1, "minor": 2, "patch": 3},
+            "functions": [
+                {"name": "my_set_callback", "c_return_type": "void", "parameters": [{"name": "cb", "c_type": "my_log_cb"}]},
+                {"name": "my_initialize", "c_return_type": "int32_t", "parameters": []},
+            ],
+            "header_types": {
+                "constants": {"MY_LIMIT": "32"},
+                "opaque_types": ["my_handle_t"],
+                "callback_typedefs": [
+                    {"name": "my_log_cb", "declaration": "typedef void (MY_CALL *my_log_cb)(void* user_data, const char* message);"}
+                ],
+                "enums": {
+                    "my_mode_t": {
+                        "members": [
+                            {"name": "MY_MODE_A", "value_expr": "0"},
+                            {"name": "MY_MODE_B", "value_expr": "1"},
+                        ]
+                    }
+                },
+                "structs": {
+                    "my_opts_t": {
+                        "fields": [
+                            {"name": "enabled", "declaration": "int enabled"},
+                        ]
+                    }
+                },
+            },
+        }
+        cfg = {
+            "native_header_guard": "MY_HEADER_H",
+            "native_api_macro": "MY_API",
+            "native_call_macro": "MY_CALL",
+            "native_constants": {},
+            "version_macro_names": {"major": "MY_ABI_MAJOR", "minor": "MY_ABI_MINOR", "patch": "MY_ABI_PATCH"},
+        }
+
+        header_text = abi_framework.render_native_header_from_idl("demo", idl_payload, cfg)
+        export_map_text = abi_framework.render_native_export_map_from_idl(idl_payload)
+
+        self.assertIn("#ifndef MY_HEADER_H", header_text)
+        self.assertIn("#define MY_LIMIT 32", header_text)
+        self.assertIn("#define MY_ABI_MAJOR 1", header_text)
+        self.assertIn("typedef struct my_handle_t my_handle_t;", header_text)
+        self.assertIn("typedef void (MY_CALL *my_log_cb)(void* user_data, const char* message);", header_text)
+        self.assertIn("typedef enum my_mode_t {", header_text)
+        self.assertIn("typedef struct my_opts_t {", header_text)
+        self.assertIn("MY_API int32_t MY_CALL my_initialize(void);", header_text)
+        self.assertIn("MY_API void MY_CALL my_set_callback(my_log_cb cb);", header_text)
+
+        self.assertIn("global:", export_map_text)
+        self.assertIn("my_initialize;", export_map_text)
+        self.assertIn("my_set_callback;", export_map_text)
+
     def test_codegen_external_generator(self) -> None:
         config_path = self.repo_root / "abi" / "config.json"
         config = abi_framework.load_json(config_path)

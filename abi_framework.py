@@ -335,7 +335,14 @@ def validate_config_payload(payload: dict[str, Any]) -> None:
         if codegen is not None:
             if not isinstance(codegen, dict):
                 raise AbiFrameworkError(f"target '{target_name}'.codegen must be an object when specified")
-            string_fields = ["idl_output_path"]
+            string_fields = [
+                "idl_output_path",
+                "native_header_output_path",
+                "native_export_map_output_path",
+                "native_header_guard",
+                "native_api_macro",
+                "native_call_macro",
+            ]
             for field_name in string_fields:
                 value = codegen.get(field_name)
                 if value is not None and (not isinstance(value, str) or not value):
@@ -383,6 +390,21 @@ def validate_config_payload(payload: dict[str, Any]) -> None:
                     if not isinstance(item, str) or not item:
                         raise AbiFrameworkError(
                             f"target '{target_name}'.codegen.{list_name}[{idx}] must be a non-empty string"
+                        )
+            native_constants = codegen.get("native_constants")
+            if native_constants is not None:
+                if not isinstance(native_constants, dict):
+                    raise AbiFrameworkError(
+                        f"target '{target_name}'.codegen.native_constants must be an object when specified"
+                    )
+                for key, value in native_constants.items():
+                    if not isinstance(key, str) or not key:
+                        raise AbiFrameworkError(
+                            f"target '{target_name}'.codegen.native_constants keys must be non-empty strings"
+                        )
+                    if not isinstance(value, str) or not value:
+                        raise AbiFrameworkError(
+                            f"target '{target_name}'.codegen.native_constants['{key}'] must be non-empty string"
                         )
 
     validate_with_jsonschema_if_available("config", payload)
@@ -992,6 +1014,72 @@ def parse_struct_blocks(content: str, policy: TypePolicy) -> dict[str, Any]:
     return {name: structs[name] for name in sorted(structs.keys())}
 
 
+def extract_opaque_struct_typedefs(content: str, symbol_prefix: str) -> list[dict[str, str]]:
+    pattern = re.compile(
+        r"typedef\s+struct\s+(?P<tag>[A-Za-z_][A-Za-z0-9_]*)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*;"
+    )
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for match in pattern.finditer(content):
+        tag = match.group("tag")
+        name = match.group("name")
+        if tag != name:
+            continue
+        if not name.startswith(symbol_prefix):
+            continue
+        if not name.endswith("_t"):
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(
+            {
+                "name": name,
+                "declaration": normalize_ws(match.group(0)),
+            }
+        )
+    return out
+
+
+def extract_callback_typedefs(content: str, symbol_prefix: str, call_macro: str) -> list[dict[str, str]]:
+    name_pattern = rf"{re.escape(symbol_prefix)}[A-Za-z0-9_]*_cb"
+    pattern = re.compile(
+        rf"typedef\s+[^;]*?\(\s*{re.escape(call_macro)}\s*\*\s*(?P<name>{name_pattern})\s*\)\s*\([^;]*?\)\s*;",
+        flags=re.S,
+    )
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for match in pattern.finditer(content):
+        name = match.group("name")
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(
+            {
+                "name": name,
+                "declaration": normalize_ws(match.group(0)),
+            }
+        )
+    return out
+
+
+def extract_prefixed_define_constants(content: str, macro_prefix: str) -> dict[str, str]:
+    pattern = re.compile(
+        r"^\s*#\s*define\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s+(?P<value>.+?)\s*$",
+        flags=re.M,
+    )
+    constants: dict[str, str] = {}
+    for match in pattern.finditer(content):
+        name = match.group("name")
+        if not name.startswith(macro_prefix):
+            continue
+        value = normalize_ws(match.group("value"))
+        if not value:
+            continue
+        constants[name] = value
+    return {name: constants[name] for name in sorted(constants.keys())}
+
+
 def parse_c_header(
     header_path: Path,
     api_macro: str,
@@ -1076,6 +1164,17 @@ def parse_c_header(
 
     enums = parse_enum_blocks(content=declaration_content, policy=type_policy)
     structs = parse_struct_blocks(content=declaration_content, policy=type_policy)
+    raw_without_comments = strip_c_comments(raw)
+    opaque_entries = extract_opaque_struct_typedefs(content=raw_without_comments, symbol_prefix=symbol_prefix)
+    callback_typedefs = extract_callback_typedefs(
+        content=raw_without_comments,
+        symbol_prefix=symbol_prefix,
+        call_macro=call_macro,
+    )
+    constants = extract_prefixed_define_constants(
+        content=raw_without_comments,
+        macro_prefix=symbol_prefix.upper(),
+    )
 
     header_payload = {
         "path": str(header_path),
@@ -1086,6 +1185,10 @@ def parse_c_header(
         "enums": enums,
         "struct_count": len(structs),
         "structs": structs,
+        "opaque_types": [item["name"] for item in opaque_entries],
+        "opaque_type_declarations": [item["declaration"] for item in opaque_entries],
+        "callback_typedefs": callback_typedefs,
+        "constants": constants,
     }
     return header_payload, AbiVersion(major=major, minor=minor, patch=patch), parser_info
 
@@ -1214,6 +1317,56 @@ def resolve_codegen_config(target: dict[str, Any], target_name: str, repo_root: 
     if isinstance(idl_output_value, str) and idl_output_value:
         idl_output_path = ensure_relative_path(repo_root, idl_output_value).resolve()
 
+    native_header_output_value = raw.get("native_header_output_path")
+    native_header_output_path = None
+    if isinstance(native_header_output_value, str) and native_header_output_value:
+        native_header_output_path = ensure_relative_path(repo_root, native_header_output_value).resolve()
+
+    native_export_map_output_value = raw.get("native_export_map_output_path")
+    native_export_map_output_path = None
+    if isinstance(native_export_map_output_value, str) and native_export_map_output_value:
+        native_export_map_output_path = ensure_relative_path(repo_root, native_export_map_output_value).resolve()
+
+    native_header_guard = raw.get("native_header_guard")
+    if native_header_guard is not None and (not isinstance(native_header_guard, str) or not native_header_guard):
+        raise AbiFrameworkError(f"target '{target_name}'.codegen.native_header_guard must be string when specified")
+
+    header_cfg = target.get("header")
+    native_api_macro = raw.get("native_api_macro")
+    native_call_macro = raw.get("native_call_macro")
+    if native_api_macro is None and isinstance(header_cfg, dict):
+        native_api_macro = header_cfg.get("api_macro")
+    if native_call_macro is None and isinstance(header_cfg, dict):
+        native_call_macro = header_cfg.get("call_macro")
+    if native_api_macro is not None and (not isinstance(native_api_macro, str) or not native_api_macro):
+        raise AbiFrameworkError(f"target '{target_name}'.codegen.native_api_macro must be string when specified")
+    if native_call_macro is not None and (not isinstance(native_call_macro, str) or not native_call_macro):
+        raise AbiFrameworkError(f"target '{target_name}'.codegen.native_call_macro must be string when specified")
+
+    version_macro_names: dict[str, str] = {
+        "major": "ABI_VERSION_MAJOR",
+        "minor": "ABI_VERSION_MINOR",
+        "patch": "ABI_VERSION_PATCH",
+    }
+    if isinstance(header_cfg, dict):
+        raw_version_macros = header_cfg.get("version_macros")
+        if isinstance(raw_version_macros, dict):
+            for key in ["major", "minor", "patch"]:
+                value = raw_version_macros.get(key)
+                if isinstance(value, str) and value:
+                    version_macro_names[key] = value
+
+    native_constants_raw = raw.get("native_constants")
+    native_constants: dict[str, str] = {}
+    if native_constants_raw is not None:
+        if not isinstance(native_constants_raw, dict):
+            raise AbiFrameworkError(
+                f"target '{target_name}'.codegen.native_constants must be an object when specified"
+            )
+        for key, value in native_constants_raw.items():
+            if isinstance(key, str) and key and isinstance(value, str) and value:
+                native_constants[key] = value
+
     idl_schema_version_value = raw.get("idl_schema_version")
     if idl_schema_version_value is None:
         idl_schema_version = IDL_SCHEMA_VERSION
@@ -1248,6 +1401,13 @@ def resolve_codegen_config(target: dict[str, Any], target_name: str, repo_root: 
     return {
         "enabled": bool(raw.get("enabled", True)),
         "idl_output_path": idl_output_path,
+        "native_header_output_path": native_header_output_path,
+        "native_export_map_output_path": native_export_map_output_path,
+        "native_header_guard": native_header_guard,
+        "native_api_macro": native_api_macro,
+        "native_call_macro": native_call_macro,
+        "native_constants": native_constants,
+        "version_macro_names": version_macro_names,
         "include_symbols": include_symbols,
         "exclude_symbols": exclude_symbols,
         "include_patterns": include_patterns,
@@ -1414,6 +1574,10 @@ def build_idl_payload(
         "header_types": {
             "enums": header.get("enums", {}),
             "structs": header.get("structs", {}),
+            "opaque_types": header.get("opaque_types", []),
+            "opaque_type_declarations": header.get("opaque_type_declarations", []),
+            "callback_typedefs": header.get("callback_typedefs", []),
+            "constants": header.get("constants", {}),
         },
         "codegen": {
             "enabled": bool(codegen_cfg.get("enabled", True)),
@@ -1468,6 +1632,345 @@ def migrate_idl_payload_to_v2(payload: dict[str, Any], target_hint: str | None =
     out["functions"] = normalized_functions
 
     return out
+
+
+def is_c_typedef_name(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*_t", value))
+
+
+def derive_opaque_type_names_from_idl(idl_payload: dict[str, Any]) -> list[str]:
+    header_types = idl_payload.get("header_types")
+    if not isinstance(header_types, dict):
+        header_types = {}
+
+    enums_obj = header_types.get("enums")
+    structs_obj = header_types.get("structs")
+    enum_names = set(enums_obj.keys()) if isinstance(enums_obj, dict) else set()
+    struct_names = set(structs_obj.keys()) if isinstance(structs_obj, dict) else set()
+
+    explicit = header_types.get("opaque_types")
+    if isinstance(explicit, list):
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in explicit:
+            if not isinstance(item, str):
+                continue
+            name = item.strip()
+            if not is_c_typedef_name(name):
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+        if names:
+            return names
+
+    candidates: set[str] = set()
+    token_pattern = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*_t\b")
+
+    functions = idl_payload.get("functions")
+    if isinstance(functions, list):
+        for item in functions:
+            if not isinstance(item, dict):
+                continue
+            return_type = str(item.get("c_return_type") or "")
+            candidates.update(token_pattern.findall(return_type))
+            params = item.get("parameters")
+            if isinstance(params, list):
+                for param in params:
+                    if not isinstance(param, dict):
+                        continue
+                    c_type = str(param.get("c_type") or "")
+                    candidates.update(token_pattern.findall(c_type))
+
+    if isinstance(structs_obj, dict):
+        for struct in structs_obj.values():
+            if not isinstance(struct, dict):
+                continue
+            fields = struct.get("fields")
+            if not isinstance(fields, list):
+                continue
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
+                declaration = str(field.get("declaration") or "")
+                candidates.update(token_pattern.findall(declaration))
+
+    out = [
+        name
+        for name in sorted(candidates)
+        if name not in enum_names and name not in struct_names and is_c_typedef_name(name)
+    ]
+    return out
+
+
+def collect_opaque_type_declarations(idl_payload: dict[str, Any]) -> list[str]:
+    header_types = idl_payload.get("header_types")
+    if not isinstance(header_types, dict):
+        header_types = {}
+
+    raw_decls = header_types.get("opaque_type_declarations")
+    declarations: list[str] = []
+    if isinstance(raw_decls, list):
+        seen: set[str] = set()
+        for item in raw_decls:
+            if not isinstance(item, str):
+                continue
+            decl = normalize_ws(item)
+            if not decl:
+                continue
+            if not decl.endswith(";"):
+                decl += ";"
+            if decl in seen:
+                continue
+            seen.add(decl)
+            declarations.append(decl)
+    if declarations:
+        return declarations
+
+    names = derive_opaque_type_names_from_idl(idl_payload)
+    return [f"typedef struct {name} {name};" for name in names]
+
+
+def collect_callback_typedef_declarations(idl_payload: dict[str, Any]) -> list[str]:
+    header_types = idl_payload.get("header_types")
+    if not isinstance(header_types, dict):
+        return []
+    raw = header_types.get("callback_typedefs")
+    if not isinstance(raw, list):
+        return []
+    declarations: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        declaration = None
+        if isinstance(item, dict):
+            value = item.get("declaration")
+            if isinstance(value, str):
+                declaration = sanitize_c_decl_text(value)
+        elif isinstance(item, str):
+            declaration = sanitize_c_decl_text(item)
+        if not declaration:
+            continue
+        declaration = re.sub(r"\(\s+", "(", declaration)
+        declaration = re.sub(r"\s+\)", ")", declaration)
+        if not declaration.endswith(";"):
+            declaration += ";"
+        if declaration in seen:
+            continue
+        seen.add(declaration)
+        declarations.append(declaration)
+    return declarations
+
+
+def collect_native_constants(idl_payload: dict[str, Any], codegen_cfg: dict[str, Any]) -> dict[str, str]:
+    constants: dict[str, str] = {}
+    header_types = idl_payload.get("header_types")
+    if isinstance(header_types, dict):
+        raw_constants = header_types.get("constants")
+        if isinstance(raw_constants, dict):
+            for key, value in raw_constants.items():
+                if isinstance(key, str) and key and isinstance(value, str) and value:
+                    constants[key] = normalize_ws(value)
+
+    overrides = codegen_cfg.get("native_constants")
+    if isinstance(overrides, dict):
+        for key, value in overrides.items():
+            if isinstance(key, str) and key and isinstance(value, str) and value:
+                constants[key] = normalize_ws(value)
+
+    return {name: constants[name] for name in sorted(constants.keys())}
+
+
+def render_c_parameter_for_declaration(param: dict[str, Any], index: int) -> str:
+    c_type = normalize_c_type(str(param.get("c_type") or "void"))
+    if bool(param.get("variadic")) or c_type == "...":
+        return "..."
+    name = str(param.get("name") or f"arg{index}")
+    if re.search(r"\(\s*\*\s*\)", c_type):
+        return re.sub(r"\(\s*\*\s*\)", f"(*{name})", c_type, count=1)
+    return f"{c_type} {name}".strip()
+
+
+def render_native_header_from_idl(target_name: str, idl_payload: dict[str, Any], codegen_cfg: dict[str, Any]) -> str:
+    api_macro = str(codegen_cfg.get("native_api_macro") or "ABI_API")
+    call_macro = str(codegen_cfg.get("native_call_macro") or "ABI_CALL")
+    header_guard_raw = codegen_cfg.get("native_header_guard")
+    if isinstance(header_guard_raw, str) and header_guard_raw:
+        header_guard = header_guard_raw
+    else:
+        base = re.sub(r"[^A-Za-z0-9_]", "_", target_name).upper()
+        header_guard = f"{base}_H" if not base.endswith("_H") else base
+
+    api_base = api_macro[:-4] if api_macro.endswith("_API") else api_macro
+    export_switch = f"{api_base}_EXPORTS"
+    dll_switch = f"{api_base}_DLL"
+
+    version_macros = codegen_cfg.get("version_macro_names")
+    if not isinstance(version_macros, dict):
+        version_macros = {}
+    version_major_name = str(version_macros.get("major") or "ABI_VERSION_MAJOR")
+    version_minor_name = str(version_macros.get("minor") or "ABI_VERSION_MINOR")
+    version_patch_name = str(version_macros.get("patch") or "ABI_VERSION_PATCH")
+
+    abi_version = idl_payload.get("abi_version")
+    if not isinstance(abi_version, dict):
+        abi_version = {}
+    major = int(abi_version.get("major") or 0)
+    minor = int(abi_version.get("minor") or 0)
+    patch = int(abi_version.get("patch") or 0)
+
+    header_types = idl_payload.get("header_types")
+    if not isinstance(header_types, dict):
+        header_types = {}
+    enums_obj = header_types.get("enums")
+    structs_obj = header_types.get("structs")
+    enums = enums_obj if isinstance(enums_obj, dict) else {}
+    structs = structs_obj if isinstance(structs_obj, dict) else {}
+
+    constants = collect_native_constants(idl_payload=idl_payload, codegen_cfg=codegen_cfg)
+    for key in [version_major_name, version_minor_name, version_patch_name]:
+        constants.pop(key, None)
+
+    lines: list[str] = []
+    lines.append(f"#ifndef {header_guard}")
+    lines.append(f"#define {header_guard}")
+    lines.append("")
+    lines.append("/* Auto-generated by abi_framework from ABI IDL. Do not edit manually. */")
+    lines.append("")
+    lines.append("#ifdef __cplusplus")
+    lines.append('extern "C" {')
+    lines.append("#endif")
+    lines.append("")
+    lines.append("#include <stddef.h>")
+    lines.append("#include <stdint.h>")
+    lines.append("#include <stdbool.h>")
+    lines.append("")
+    lines.append("#if defined(_WIN32)")
+    lines.append(f"  #if defined({export_switch})")
+    lines.append(f"    #define {api_macro} __declspec(dllexport)")
+    lines.append(f"  #elif defined({dll_switch})")
+    lines.append(f"    #define {api_macro} __declspec(dllimport)")
+    lines.append("  #else")
+    lines.append(f"    #define {api_macro}")
+    lines.append("  #endif")
+    lines.append(f"  #define {call_macro} __cdecl")
+    lines.append("#else")
+    lines.append(f'  #define {api_macro} __attribute__((visibility("default")))')
+    lines.append(f"  #define {call_macro}")
+    lines.append("#endif")
+    lines.append("")
+    for name, value in constants.items():
+        lines.append(f"#define {name} {value}")
+    lines.append(f"#define {version_major_name} {major}")
+    lines.append(f"#define {version_minor_name} {minor}")
+    lines.append(f"#define {version_patch_name} {patch}")
+    lines.append("")
+
+    opaque_typedefs = collect_opaque_type_declarations(idl_payload)
+    for declaration in opaque_typedefs:
+        lines.append(declaration)
+    if opaque_typedefs:
+        lines.append("")
+
+    callback_typedefs = collect_callback_typedef_declarations(idl_payload)
+    for declaration in callback_typedefs:
+        lines.append(declaration)
+    if callback_typedefs:
+        lines.append("")
+
+    for enum_name in sorted(enums.keys()):
+        enum_obj = enums.get(enum_name)
+        if not isinstance(enum_obj, dict):
+            continue
+        lines.append(f"typedef enum {enum_name} {{")
+        members = enum_obj.get("members")
+        if isinstance(members, list):
+            for member in members:
+                if not isinstance(member, dict):
+                    continue
+                member_name = str(member.get("name") or "")
+                if not member_name:
+                    continue
+                value_expr = member.get("value_expr")
+                value = member.get("value")
+                if isinstance(value_expr, str) and value_expr:
+                    lines.append(f"  {member_name} = {value_expr},")
+                elif isinstance(value, int):
+                    lines.append(f"  {member_name} = {value},")
+                else:
+                    lines.append(f"  {member_name},")
+        lines.append(f"}} {enum_name};")
+        lines.append("")
+
+    for struct_name in sorted(structs.keys()):
+        struct_obj = structs.get(struct_name)
+        if not isinstance(struct_obj, dict):
+            continue
+        lines.append(f"typedef struct {struct_name} {{")
+        fields = struct_obj.get("fields")
+        if isinstance(fields, list):
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
+                declaration = normalize_ws(str(field.get("declaration") or ""))
+                if not declaration:
+                    continue
+                lines.append(f"  {declaration};")
+        lines.append(f"}} {struct_name};")
+        lines.append("")
+
+    functions = idl_payload.get("functions")
+    if isinstance(functions, list):
+        for item in sorted(functions, key=lambda obj: str(obj.get("name") if isinstance(obj, dict) else "")):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            if not name:
+                continue
+            return_type = normalize_c_type(str(item.get("c_return_type") or "void"))
+            params = item.get("parameters")
+            params_out: list[str] = []
+            if isinstance(params, list):
+                for idx, param in enumerate(params):
+                    if not isinstance(param, dict):
+                        continue
+                    params_out.append(render_c_parameter_for_declaration(param, idx))
+            params_text = ", ".join(params_out) if params_out else "void"
+            lines.append(f"{api_macro} {return_type} {call_macro} {name}({params_text});")
+
+    lines.append("")
+    lines.append("#ifdef __cplusplus")
+    lines.append("}")
+    lines.append("#endif")
+    lines.append("")
+    lines.append(f"#endif /* {header_guard} */")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_native_export_map_from_idl(idl_payload: dict[str, Any]) -> str:
+    functions = idl_payload.get("functions")
+    symbols: list[str] = []
+    if isinstance(functions, list):
+        for item in functions:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if isinstance(name, str) and name:
+                symbols.append(name)
+    symbols = sorted(set(symbols))
+
+    lines: list[str] = []
+    lines.append("{")
+    lines.append("  global:")
+    for symbol in symbols:
+        lines.append(f"    {symbol};")
+    lines.append("")
+    lines.append("  local:")
+    lines.append("    *;")
+    lines.append("};")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def normalize_generator_entries(target_name: str, target: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3682,6 +4185,13 @@ def build_codegen_for_target(
         dry_run=dry_run,
         check=check,
     )
+    artifacts: dict[str, Any] = {
+        "idl": {
+            "path": to_repo_relative(idl_output_path, repo_root),
+            "status": idl_status,
+        },
+    }
+    artifact_statuses = [idl_status]
 
     generated_symbols = {
         str(item.get("name"))
@@ -3704,7 +4214,45 @@ def build_codegen_for_target(
     if print_diff and idl_diff:
         print(idl_diff)
 
-    has_codegen_drift = idl_status in {"drift", "would_write"}
+    native_header_output_path = codegen_cfg.get("native_header_output_path")
+    if isinstance(native_header_output_path, Path):
+        native_header_text = render_native_header_from_idl(
+            target_name=target_name,
+            idl_payload=idl_payload,
+            codegen_cfg=codegen_cfg,
+        )
+        header_status, header_diff = write_artifact_if_changed(
+            path=native_header_output_path,
+            content=native_header_text,
+            dry_run=dry_run,
+            check=check,
+        )
+        artifacts["native_header"] = {
+            "path": to_repo_relative(native_header_output_path, repo_root),
+            "status": header_status,
+        }
+        artifact_statuses.append(header_status)
+        if print_diff and header_diff:
+            print(header_diff)
+
+    native_export_map_output_path = codegen_cfg.get("native_export_map_output_path")
+    if isinstance(native_export_map_output_path, Path):
+        native_export_map_text = render_native_export_map_from_idl(idl_payload=idl_payload)
+        export_map_status, export_map_diff = write_artifact_if_changed(
+            path=native_export_map_output_path,
+            content=native_export_map_text,
+            dry_run=dry_run,
+            check=check,
+        )
+        artifacts["native_export_map"] = {
+            "path": to_repo_relative(native_export_map_output_path, repo_root),
+            "status": export_map_status,
+        }
+        artifact_statuses.append(export_map_status)
+        if print_diff and export_map_diff:
+            print(export_map_diff)
+
+    has_codegen_drift = any(status in {"drift", "would_write"} for status in artifact_statuses)
     has_sync_drift = bool(sync_comparison["missing_symbols"]) or bool(sync_comparison["extra_symbols"])
 
     return {
@@ -3715,13 +4263,18 @@ def build_codegen_for_target(
         "idl_output_path_abs": idl_output_path,
         "codegen_config": {
             "idl_output_path": to_repo_relative(idl_output_path, repo_root),
+            "native_header_output_path": (
+                to_repo_relative(native_header_output_path, repo_root)
+                if isinstance(native_header_output_path, Path)
+                else None
+            ),
+            "native_export_map_output_path": (
+                to_repo_relative(native_export_map_output_path, repo_root)
+                if isinstance(native_export_map_output_path, Path)
+                else None
+            ),
         },
-        "artifacts": {
-            "idl": {
-                "path": to_repo_relative(idl_output_path, repo_root),
-                "status": idl_status,
-            },
-        },
+        "artifacts": artifacts,
         "sync": sync_comparison,
         "has_codegen_drift": has_codegen_drift,
         "has_sync_drift": has_sync_drift,
@@ -3784,7 +4337,9 @@ def command_generate(args: argparse.Namespace) -> int:
 
         artifacts = result["artifacts"]
         idl_status = ((artifacts.get("idl") or {}).get("status")) or "unknown"
-        print(f"[{target_name}] generate: idl={idl_status}")
+        native_header_status = ((artifacts.get("native_header") or {}).get("status")) or "n/a"
+        native_map_status = ((artifacts.get("native_export_map") or {}).get("status")) or "n/a"
+        print(f"[{target_name}] generate: idl={idl_status} native_header={native_header_status} map={native_map_status}")
         print_sync_comparison(target_name, result["sync"])
 
         if args.check and result["has_codegen_drift"]:
@@ -3975,7 +4530,13 @@ def command_codegen(args: argparse.Namespace) -> int:
         if bool(args.fail_on_sync) and bool(generated.get("has_sync_drift")):
             exit_code = 1
 
-        print(f"[{target_name}] idl={((generated.get('artifacts') or {}).get('idl') or {}).get('status', 'unknown')}")
+        artifacts = generated.get("artifacts") if isinstance(generated, dict) else {}
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+        idl_status = ((artifacts.get("idl") or {}).get("status")) or "unknown"
+        native_header_status = ((artifacts.get("native_header") or {}).get("status")) or "n/a"
+        native_map_status = ((artifacts.get("native_export_map") or {}).get("status")) or "n/a"
+        print(f"[{target_name}] idl={idl_status} native_header={native_header_status} map={native_map_status}")
         if not generator_results:
             print(f"[{target_name}] generator: none configured")
         for item in generator_results:

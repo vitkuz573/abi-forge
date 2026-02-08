@@ -148,6 +148,15 @@
               "enabled": { "type": "boolean" },
               "idl_schema_version": { "type": "integer", "minimum": 1 },
               "idl_output_path": { "type": "string", "minLength": 1 },
+              "native_header_output_path": { "type": "string", "minLength": 1 },
+              "native_export_map_output_path": { "type": "string", "minLength": 1 },
+              "native_header_guard": { "type": "string", "minLength": 1 },
+              "native_api_macro": { "type": "string", "minLength": 1 },
+              "native_call_macro": { "type": "string", "minLength": 1 },
+              "native_constants": {
+                "type": "object",
+                "additionalProperties": { "type": "string", "minLength": 1 }
+              },
               "include_symbols": { "type": "array", "items": { "type": "string", "minLength": 1 } },
               "exclude_symbols": { "type": "array", "items": { "type": "string", "minLength": 1 } },
               "include_symbols_regex": { "type": "array", "items": { "type": "string", "minLength": 1 } },
