@@ -1477,17 +1477,6 @@ def normalize_generator_entries(target_name: str, target: dict[str, Any]) -> lis
 
     generators_raw = bindings_cfg.get("generators")
     if generators_raw is None:
-        csharp_cfg = bindings_cfg.get("csharp")
-        if isinstance(csharp_cfg, dict):
-            return [
-                {
-                    "name": "csharp-roslyn",
-                    "kind": "builtin",
-                    "builtin": "csharp-roslyn",
-                    "enabled": True,
-                    "options": csharp_cfg,
-                }
-            ]
         return []
 
     if not isinstance(generators_raw, list):
@@ -1500,17 +1489,14 @@ def normalize_generator_entries(target_name: str, target: dict[str, Any]) -> lis
         if not bool(item.get("enabled", True)):
             continue
         name = str(item.get("name") or f"generator_{idx}")
-        kind = str(item.get("kind") or "builtin").strip().lower()
+        kind = str(item.get("kind") or "external").strip().lower()
         entry: dict[str, Any] = {
             "name": name,
             "kind": kind,
             "enabled": True,
             "options": item.get("options") if isinstance(item.get("options"), dict) else {},
         }
-        if kind == "builtin":
-            builtin = str(item.get("builtin") or name).strip().lower()
-            entry["builtin"] = builtin
-        elif kind == "external":
+        if kind == "external":
             command = item.get("command")
             if not isinstance(command, list) or not command or not all(isinstance(x, str) and x for x in command):
                 raise AbiFrameworkError(
@@ -1519,7 +1505,7 @@ def normalize_generator_entries(target_name: str, target: dict[str, Any]) -> lis
             entry["command"] = command
         else:
             raise AbiFrameworkError(
-                f"target '{target_name}'.bindings.generators[{idx}].kind must be builtin or external"
+                f"target '{target_name}'.bindings.generators[{idx}].kind must be external"
             )
         entries.append(entry)
 
@@ -1536,66 +1522,13 @@ def run_generator_entry(
     dry_run: bool,
 ) -> dict[str, Any]:
     name = str(generator.get("name") or "generator")
-    kind = str(generator.get("kind") or "builtin")
-    options = generator.get("options")
-    options_obj = options if isinstance(options, dict) else {}
+    kind = str(generator.get("kind") or "external")
 
     if kind == "builtin":
         builtin = str(generator.get("builtin") or name).strip().lower()
-        if builtin != "csharp-roslyn":
-            raise AbiFrameworkError(f"Unknown builtin generator '{builtin}' for target '{target_name}'")
-
-        project = str(options_obj.get("project") or "tools/lumenrtc_roslyn_codegen/LumenRTC.Abi.RoslynGenerator.csproj")
-        output_path = str(options_obj.get("output_path") or f"abi/generated/{target_name}/NativeMethods.g.cs")
-        namespace = str(options_obj.get("namespace") or "LumenRTC.Interop")
-        class_name = str(options_obj.get("class_name") or "NativeMethods")
-        access_modifier = str(options_obj.get("access_modifier") or "internal")
-        calling_convention = str(options_obj.get("calling_convention") or "Cdecl")
-        library_expression = str(options_obj.get("library_expression") or "LibName")
-        dotnet_bin = str(options_obj.get("dotnet_bin") or os.environ.get("DOTNET_BIN") or "dotnet")
-
-        project_path = ensure_relative_path(repo_root, project).resolve()
-        output_abs = ensure_relative_path(repo_root, output_path).resolve()
-
-        command = [
-            dotnet_bin,
-            "run",
-            "--project",
-            str(project_path),
-            "--",
-            "--idl",
-            str(idl_path),
-            "--output",
-            str(output_abs),
-            "--namespace",
-            namespace,
-            "--class-name",
-            class_name,
-            "--access-modifier",
-            access_modifier,
-            "--calling-convention",
-            calling_convention,
-            "--library-expression",
-            library_expression,
-        ]
-        if check:
-            command.append("--check")
-        if dry_run:
-            command.append("--dry-run")
-
-        proc = subprocess.run(command, capture_output=True, text=True)
-        status = "pass" if proc.returncode == 0 else "fail"
-        return {
-            "name": name,
-            "kind": "builtin",
-            "builtin": builtin,
-            "status": status,
-            "command": " ".join(shlex.quote(item) for item in command),
-            "stdout": proc.stdout.strip(),
-            "stderr": proc.stderr.strip(),
-            "output_path": to_repo_relative(output_abs, repo_root),
-            "exit_code": proc.returncode,
-        }
+        raise AbiFrameworkError(
+            f"Builtin generator '{builtin}' is not supported; use kind='external' for target '{target_name}'"
+        )
 
     if kind == "external":
         command_template = generator.get("command")
@@ -4009,8 +3942,6 @@ def command_codegen(args: argparse.Namespace) -> int:
             check=bool(args.check),
             dry_run=bool(args.dry_run),
         )
-        if not generator_results:
-            aggregate["summary"]["warning_count"] += 1
         generator_failed = any(item.get("status") != "pass" for item in generator_results)
         if generator_failed:
             exit_code = 1
@@ -4669,21 +4600,7 @@ def command_doctor(args: argparse.Namespace) -> int:
             if not idl_output.parent.exists():
                 issues.append(("warning", target_name, f"IDL output parent does not exist yet: {idl_output.parent}"))
 
-            generators = normalize_generator_entries(target_name=target_name, target=target)
-            if not generators:
-                issues.append(("warning", target_name, "no bindings generators configured (bindings.generators)"))
-            else:
-                for generator in generators:
-                    if str(generator.get("kind")) == "builtin" and str(generator.get("builtin")) == "csharp-roslyn":
-                        options = generator.get("options")
-                        options_obj = options if isinstance(options, dict) else {}
-                        project = str(
-                            options_obj.get("project")
-                            or "tools/lumenrtc_roslyn_codegen/LumenRTC.Abi.RoslynGenerator.csproj"
-                        )
-                        project_path = ensure_relative_path(repo_root, project).resolve()
-                        if not project_path.exists():
-                            issues.append(("error", target_name, f"csharp-roslyn project not found: {project_path}"))
+            normalize_generator_entries(target_name=target_name, target=target)
 
         except AbiFrameworkError as exc:
             issues.append(("error", target_name, f"codegen config invalid: {exc}"))

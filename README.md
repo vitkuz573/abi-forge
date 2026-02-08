@@ -142,14 +142,15 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
         "deprecated_symbols": ["my_shutdown"],
         "generators": [
           {
-            "name": "csharp",
-            "kind": "builtin",
-            "builtin": "csharp-roslyn",
+            "name": "stub",
+            "kind": "external",
             "enabled": true,
-            "options": {
-              "output_path": "abi/generated/my_target/NativeMethods.g.cs",
-              "namespace": "MyTarget.Interop"
-            }
+            "command": [
+              "python3",
+              "tools/codegen_stub.py",
+              "{idl}",
+              "{repo_root}/artifacts/my_target.stub.txt"
+            ]
           }
         ]
       },
