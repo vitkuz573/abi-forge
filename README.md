@@ -106,6 +106,7 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
         "parser": {
           "backend": "clang_preprocess",
           "compiler": "clang",
+          "compiler_candidates": ["clang", "clang-18", "clang-17", "clang++"],
           "args": ["-D_GNU_SOURCE"],
           "include_dirs": ["native/include"],
           "fallback_to_regex": true
@@ -173,6 +174,8 @@ Notes:
 - `bindings.expected_symbols` is optional but recommended.
 - `codegen` command runs IDL generation plus configured language generators.
 - `generate` command generates IDL only.
+- `header.parser.compiler_candidates` lets parser auto-pick the first available clang binary.
+- Environment override `ABI_CLANG` can force a specific clang executable path.
 
 ## Wrapper scripts
 

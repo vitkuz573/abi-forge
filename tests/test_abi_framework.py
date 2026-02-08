@@ -4,6 +4,7 @@ import argparse
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 import sys
 
@@ -260,26 +261,8 @@ MY_API int MY_CALL my_add(int a, int b);
             "patch": "MY_ABI_VERSION_PATCH",
         }
 
-        header_payload, abi_version, parser_info = abi_framework.parse_c_header(
-            header_path=header_path,
-            api_macro="MY_API",
-            call_macro="MY_CALL",
-            symbol_prefix="my_",
-            version_macros=version_macros,
-            type_policy=type_policy,
-            parser_cfg={
-                "backend": "clang_preprocess",
-                "compiler": "definitely-not-a-real-compiler",
-                "fallback_to_regex": True,
-            },
-        )
-        self.assertEqual(abi_version.major, 1)
-        self.assertTrue(header_payload["function_count"] >= 2)
-        self.assertEqual(parser_info["backend"], "regex")
-        self.assertTrue(parser_info["fallback_used"])
-
-        with self.assertRaises(abi_framework.AbiFrameworkError):
-            abi_framework.parse_c_header(
+        with mock.patch.object(abi_framework, "_resolve_executable_candidate", return_value=None):
+            header_payload, abi_version, parser_info = abi_framework.parse_c_header(
                 header_path=header_path,
                 api_macro="MY_API",
                 call_macro="MY_CALL",
@@ -289,9 +272,53 @@ MY_API int MY_CALL my_add(int a, int b);
                 parser_cfg={
                     "backend": "clang_preprocess",
                     "compiler": "definitely-not-a-real-compiler",
-                    "fallback_to_regex": False,
+                    "compiler_candidates": [],
+                    "fallback_to_regex": True,
                 },
             )
+            self.assertEqual(abi_version.major, 1)
+            self.assertTrue(header_payload["function_count"] >= 2)
+            self.assertEqual(parser_info["backend"], "regex")
+            self.assertTrue(parser_info["fallback_used"])
+
+            with self.assertRaises(abi_framework.AbiFrameworkError):
+                abi_framework.parse_c_header(
+                    header_path=header_path,
+                    api_macro="MY_API",
+                    call_macro="MY_CALL",
+                    symbol_prefix="my_",
+                    version_macros=version_macros,
+                    type_policy=type_policy,
+                    parser_cfg={
+                        "backend": "clang_preprocess",
+                        "compiler": "definitely-not-a-real-compiler",
+                        "compiler_candidates": [],
+                        "fallback_to_regex": False,
+                    },
+                )
+
+    def test_resolve_parser_compiler_uses_candidates(self) -> None:
+        parser_cfg = {
+            "backend": "clang_preprocess",
+            "compiler": "clang-does-not-exist",
+            "compiler_candidates": ["clang-missing", "clang-18"],
+            "args": [],
+            "include_dirs": [],
+            "fallback_to_regex": True,
+        }
+
+        def fake_resolver(candidate: str) -> str | None:
+            if candidate == "clang-18":
+                return "/usr/bin/clang-18"
+            return None
+
+        with mock.patch.object(abi_framework, "_resolve_executable_candidate", side_effect=fake_resolver):
+            resolved, meta = abi_framework.resolve_parser_compiler(parser_cfg)
+
+        self.assertEqual(resolved, "/usr/bin/clang-18")
+        self.assertEqual(meta["compiler_selected"], "clang-18")
+        self.assertEqual(meta["compiler_requested"], "clang-does-not-exist")
+        self.assertIn("clang-does-not-exist", meta["compiler_candidates"])
 
     def test_codegen_external_generator(self) -> None:
         config_path = self.repo_root / "abi" / "config.json"

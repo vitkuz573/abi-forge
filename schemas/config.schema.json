@@ -103,6 +103,7 @@
                 "properties": {
                   "backend": { "type": "string", "enum": ["regex", "clang_preprocess"] },
                   "compiler": { "type": "string" },
+                  "compiler_candidates": { "type": "array", "items": { "type": "string" } },
                   "args": { "type": "array", "items": { "type": "string" } },
                   "include_dirs": { "type": "array", "items": { "type": "string" } },
                   "fallback_to_regex": { "type": "boolean" }

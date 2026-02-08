@@ -206,7 +206,7 @@ def validate_config_payload(payload: dict[str, Any]) -> None:
                     raise AbiFrameworkError(
                         f"target '{target_name}'.header.parser.{key} must be a non-empty string when specified"
                     )
-            for key in ["args", "include_dirs"]:
+            for key in ["args", "include_dirs", "compiler_candidates"]:
                 value = parser_cfg.get(key)
                 if value is not None:
                     if not isinstance(value, list):
@@ -528,7 +528,12 @@ def resolve_header_parser_config(header_cfg: dict[str, Any], repo_root: Path) ->
             "Target field 'header.parser.backend' must be one of: regex, clang_preprocess."
         )
 
-    compiler = str(raw.get("compiler") or os.environ.get("CC") or "clang")
+    compiler_value = raw.get("compiler")
+    compiler = str(compiler_value).strip() if isinstance(compiler_value, str) and compiler_value.strip() else None
+    compiler_candidates = normalize_string_list(
+        raw.get("compiler_candidates"),
+        "header.parser.compiler_candidates",
+    )
     parser_args = normalize_string_list(raw.get("args"), "header.parser.args")
     include_dirs_raw = normalize_string_list(raw.get("include_dirs"), "header.parser.include_dirs")
     include_dirs = [str(ensure_relative_path(repo_root, item).resolve()) for item in include_dirs_raw]
@@ -536,31 +541,160 @@ def resolve_header_parser_config(header_cfg: dict[str, Any], repo_root: Path) ->
     return {
         "backend": backend,
         "compiler": compiler,
+        "compiler_candidates": compiler_candidates,
         "args": parser_args,
         "include_dirs": include_dirs,
         "fallback_to_regex": bool(raw.get("fallback_to_regex", True)),
     }
 
 
+def _dedupe_non_empty_strings(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = raw.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _default_clang_compiler_candidates() -> list[str]:
+    candidates: list[str] = []
+
+    for env_key in ["ABI_CLANG", "LLVM_CLANG", "CC"]:
+        value = os.environ.get(env_key)
+        if isinstance(value, str) and value.strip():
+            candidates.append(value.strip())
+
+    if os.name == "nt":
+        llvm_home = os.environ.get("LLVM_HOME")
+        if isinstance(llvm_home, str) and llvm_home.strip():
+            candidates.append(str(Path(llvm_home.strip()) / "bin" / "clang.exe"))
+        program_files = os.environ.get("ProgramFiles")
+        if isinstance(program_files, str) and program_files.strip():
+            candidates.append(str(Path(program_files.strip()) / "LLVM" / "bin" / "clang.exe"))
+        candidates.extend(
+            [
+                "clang",
+                "clang.exe",
+                "clang++",
+                "clang++.exe",
+                "clang-cl",
+                "clang-cl.exe",
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                "clang",
+                "clang-20",
+                "clang-19",
+                "clang-18",
+                "clang-17",
+                "clang-16",
+                "clang-15",
+                "clang-14",
+                "clang++",
+                "clang++-20",
+                "clang++-19",
+                "clang++-18",
+                "clang++-17",
+                "clang++-16",
+            ]
+        )
+    return _dedupe_non_empty_strings(candidates)
+
+
+def default_parser_compiler_candidates_for_config() -> list[str]:
+    return [
+        "clang",
+        "clang-20",
+        "clang-19",
+        "clang-18",
+        "clang-17",
+        "clang-16",
+        "clang++",
+        "clang-cl",
+        "clang.exe",
+    ]
+
+
+def _resolve_executable_candidate(candidate: str) -> str | None:
+    expanded = os.path.expanduser(os.path.expandvars(candidate.strip()))
+    if not expanded:
+        return None
+
+    # Explicit path (absolute or relative with separators).
+    if any(sep in expanded for sep in ["/", "\\"]):
+        candidate_path = Path(expanded)
+        if candidate_path.exists():
+            return str(candidate_path)
+        return None
+
+    return shutil.which(expanded)
+
+
+def resolve_parser_compiler(parser_cfg: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    explicit = parser_cfg.get("compiler")
+    explicit_compiler = str(explicit).strip() if isinstance(explicit, str) and explicit.strip() else None
+    raw_candidates = parser_cfg.get("compiler_candidates")
+    configured_candidates = [str(item).strip() for item in raw_candidates] if isinstance(raw_candidates, list) else []
+
+    candidate_sources: list[str] = []
+    if explicit_compiler:
+        candidate_sources.append(explicit_compiler)
+    candidate_sources.extend(configured_candidates)
+    candidate_sources.extend(_default_clang_compiler_candidates())
+
+    candidates = _dedupe_non_empty_strings(candidate_sources)
+    if not candidates:
+        raise AbiFrameworkError(
+            "header.parser compiler candidates are empty. Configure header.parser.compiler "
+            "or header.parser.compiler_candidates."
+        )
+
+    for candidate in candidates:
+        resolved = _resolve_executable_candidate(candidate)
+        if resolved:
+            return resolved, {
+                "compiler_requested": explicit_compiler,
+                "compiler_selected": candidate,
+                "compiler_candidates": candidates,
+            }
+
+    raise AbiFrameworkError(
+        "header.parser compiler not found; tried: "
+        + ", ".join(candidates)
+        + ". Configure header.parser.compiler/header.parser.compiler_candidates "
+        + "or set ABI_CLANG."
+    )
+
+
 def preprocess_header_for_parsing(header_path: Path, parser_cfg: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    compiler = str(parser_cfg.get("compiler") or os.environ.get("CC") or "clang")
     args = parser_cfg.get("args")
     include_dirs = parser_cfg.get("include_dirs")
     parser_args = [str(item) for item in args] if isinstance(args, list) else []
     include_values = [str(item) for item in include_dirs] if isinstance(include_dirs, list) else []
 
-    command: list[str] = [compiler, "-E", "-P", "-x", "c", "-std=c11", str(header_path)]
-    for include_dir in include_values:
-        command.extend(["-I", include_dir])
-    command.extend(parser_args)
+    compiler_resolved, compiler_meta = resolve_parser_compiler(parser_cfg)
+    compiler_basename = Path(compiler_resolved).name.lower()
+
+    if compiler_basename in {"clang-cl", "clang-cl.exe"}:
+        command: list[str] = [compiler_resolved, "/EP", "/nologo", "/TC", str(header_path)]
+        for include_dir in include_values:
+            command.extend(["/I", include_dir])
+        command.extend(parser_args)
+    else:
+        command = [compiler_resolved, "-E", "-P", "-x", "c", "-std=c11", str(header_path)]
+        for include_dir in include_values:
+            command.extend(["-I", include_dir])
+        command.extend(parser_args)
 
     start = time.perf_counter()
     try:
         proc = subprocess.run(command, capture_output=True, text=True, check=True)
-    except FileNotFoundError as exc:
-        raise AbiFrameworkError(
-            f"header.parser compiler not found: {compiler}. Configure header.parser.compiler."
-        ) from exc
     except subprocess.CalledProcessError as exc:
         message = exc.stderr.strip() or exc.stdout.strip() or "unknown parser error"
         raise AbiFrameworkError(
@@ -571,9 +705,11 @@ def preprocess_header_for_parsing(header_path: Path, parser_cfg: dict[str, Any])
 
     metadata = {
         "backend": "clang_preprocess",
+        "compiler_resolved": compiler_resolved,
         "command": " ".join(shlex.quote(item) for item in command),
         "elapsed_ms": elapsed_ms,
     }
+    metadata.update(compiler_meta)
     return proc.stdout, metadata
 
 
@@ -1208,7 +1344,7 @@ def build_idl_payload(
     parser_info = header.get("parser")
     parser_backend = None
     if isinstance(parser_info, dict):
-        parser_backend = parser_info.get("backend")
+        parser_backend = parser_info.get("backend_requested", parser_info.get("backend"))
 
     payload = {
         "idl_schema_version": idl_schema_version,
@@ -4436,11 +4572,11 @@ def command_doctor(args: argparse.Namespace) -> int:
         try:
             parser_cfg = resolve_header_parser_config(header_cfg=header_cfg, repo_root=repo_root)
             if parser_cfg["backend"] == "clang_preprocess":
-                compiler = str(parser_cfg.get("compiler") or "")
-                if compiler and shutil.which(compiler) is None:
-                    issues.append(
-                        ("warning", target_name, f"header.parser.backend=clang_preprocess but compiler not found: {compiler}")
-                    )
+                try:
+                    resolve_parser_compiler(parser_cfg)
+                except AbiFrameworkError as exc:
+                    severity = "warning" if parser_cfg.get("fallback_to_regex", True) else "error"
+                    issues.append((severity, target_name, str(exc)))
         except AbiFrameworkError as exc:
             issues.append(("error", target_name, f"header.parser config invalid: {exc}"))
 
@@ -4672,6 +4808,14 @@ def command_init_target(args: argparse.Namespace) -> int:
             "api_macro": args.api_macro,
             "call_macro": args.call_macro,
             "symbol_prefix": args.symbol_prefix,
+            "parser": {
+                "backend": "clang_preprocess",
+                "compiler": "clang",
+                "compiler_candidates": default_parser_compiler_candidates_for_config(),
+                "args": [],
+                "include_dirs": [],
+                "fallback_to_regex": True,
+            },
             "version_macros": {
                 "major": args.version_major_macro,
                 "minor": args.version_minor_macro,
