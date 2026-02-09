@@ -2,6 +2,19 @@
 
 `abi_framework` is a config-driven, language-agnostic ABI governance tool.
 
+## Project structure
+
+- `tools/abi_framework/abi_framework.py`  
+  CLI entrypoint.
+- `tools/abi_framework/src/abi_framework_core/core.py`  
+  ABI engine primitives (parse, diff, policy, idl/codegen building blocks).
+- `tools/abi_framework/src/abi_framework_core/commands.py`  
+  Command orchestration (`generate`, `verify-all`, `sync`, `release-prepare`, etc.).
+- `tools/abi_framework/src/abi_framework_core/cli.py`  
+  CLI argument routing and exit-code behavior.
+- `tools/abi_framework/ARCHITECTURE.md`  
+  Architectural boundaries and extension rules.
+
 ## What it does
 
 - Extracts C ABI surface from headers (`api_macro` + `call_macro` + `symbol_prefix`).

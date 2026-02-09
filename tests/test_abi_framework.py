@@ -9,8 +9,9 @@ from unittest import mock
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import abi_framework  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import abi_framework_core as abi_framework  # noqa: E402
+from abi_framework_core import core as abi_core  # noqa: E402
 
 
 def make_snapshot(version: tuple[int, int, int], functions: dict[str, str]) -> dict[str, object]:
@@ -262,7 +263,7 @@ MY_API int MY_CALL my_add(int a, int b);
             "patch": "MY_ABI_VERSION_PATCH",
         }
 
-        with mock.patch.object(abi_framework, "_resolve_executable_candidate", return_value=None):
+        with mock.patch.object(abi_core, "_resolve_executable_candidate", return_value=None):
             header_payload, abi_version, parser_info = abi_framework.parse_c_header(
                 header_path=header_path,
                 api_macro="MY_API",
@@ -321,7 +322,7 @@ MY_API int MY_CALL my_add(int a, int b);
                 return "/usr/bin/clang-18"
             return None
 
-        with mock.patch.object(abi_framework, "_resolve_executable_candidate", side_effect=fake_resolver):
+        with mock.patch.object(abi_core, "_resolve_executable_candidate", side_effect=fake_resolver):
             resolved, meta = abi_framework.resolve_parser_compiler(parser_cfg)
 
         self.assertEqual(resolved, "/usr/bin/clang-18")
