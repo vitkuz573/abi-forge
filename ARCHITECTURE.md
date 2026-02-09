@@ -12,8 +12,14 @@
 tools/abi_framework/
   abi_framework.py                    # CLI entrypoint
   src/abi_framework_core/
-    __init__.py                       # public API surface for wrapper imports
-    core.py                           # domain engine (parse/compare/policy/codegen primitives)
+    __init__.py                       # package export surface
+    core.py                           # aggregated domain API (re-export of split core modules)
+    _core_base.py                     # schema/config validation + header parsing foundations
+    _core_codegen.py                  # idl/native artifact generation + generator execution
+    _core_snapshot.py                 # binary export extraction + snapshot assembly
+    _core_compare.py                  # diff/classification + markdown/sarif/html rendering
+    _core_policy.py                   # policy rules/waivers + policy application
+    _core_orchestration.py            # cross-domain orchestration helpers
     commands/
       __init__.py                     # command export surface
       common.py                       # shared command helpers (target/baseline/binary resolution)
@@ -30,9 +36,9 @@ tools/abi_framework/
 
 ## Layer Responsibilities
 
-- `core.py`
-  - Owns ABI domain behavior: snapshots, diffing, policy evaluation, IDL generation, artifact renderers.
-  - Contains no argument-parser wiring.
+- `core.py` + `_core_*`
+  - Own ABI domain behavior: snapshots, diffing, policy evaluation, IDL generation, artifact renderers.
+  - `core.py` is intentionally thin and re-exports split modules.
 - `commands/*`
   - Orchestrates multi-target flows and report outputs, split by responsibility.
   - Uses `core.py` primitives as the only business dependency.
@@ -40,8 +46,7 @@ tools/abi_framework/
   - Defines command-line interface contracts and command routing.
   - Converts domain errors to stable process exit codes.
 - `abi_framework.py`
-  - Preserves old import and executable path (`tools/abi_framework/abi_framework.py`).
-  - Re-exports public API expected by scripts/tests.
+  - CLI executable entrypoint (`tools/abi_framework/abi_framework.py`).
 
 ## Public Contract
 
@@ -51,7 +56,8 @@ tools/abi_framework/
 
 ## Extension Rules
 
-- Add domain logic to `core.py`.
-- Add workflow orchestration to `commands.py`.
+- Add domain logic to the relevant `_core_*` module.
+- Keep `core.py` as thin re-export glue.
+- Add workflow orchestration to the relevant `commands/*` module.
 - Add or change CLI surface only in `cli.py`.
-- Keep wrapper thin; avoid adding business logic there.
+- Keep `abi_framework.py` thin; avoid adding business logic there.

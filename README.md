@@ -7,7 +7,9 @@
 - `tools/abi_framework/abi_framework.py`  
   CLI entrypoint.
 - `tools/abi_framework/src/abi_framework_core/core.py`  
-  ABI engine primitives (parse, diff, policy, idl/codegen building blocks).
+  Aggregated domain API re-exporting split core modules.
+- `tools/abi_framework/src/abi_framework_core/_core_*.py`  
+  ABI engine internals split by responsibility: parsing/validation, codegen, snapshot, compare/reporting, policy, orchestration.
 - `tools/abi_framework/src/abi_framework_core/commands/`  
   Command orchestration split by domain:
   `generation.py`, `verification.py`, `governance.py`, `performance.py`, `release.py`, `targets.py`.
