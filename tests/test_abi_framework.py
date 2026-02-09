@@ -534,73 +534,17 @@ typedef void (LUMENRTC_CALL *lrtc_void_cb)(void* user_data);
         self.assertIn("targets", payload)
         self.assertIn("demo", payload["targets"])
 
-    def test_idl_migrate_command(self) -> None:
-        input_path = self.repo_root / "abi" / "generated" / "legacy.idl.json"
-        output_path = self.repo_root / "abi" / "generated" / "legacy.v2.idl.json"
-        input_path.parent.mkdir(parents=True, exist_ok=True)
-        input_payload = {
-            "tool": {"name": "abi_framework", "version": "legacy"},
+    def test_validate_idl_payload_rejects_non_v1(self) -> None:
+        payload = {
+            "idl_schema_version": 0,
+            "idl_schema": "https://lumenrtc.dev/abi_framework/idl.schema.v1.json",
+            "tool": {"name": "abi_framework", "version": "test"},
             "target": "demo",
             "abi_version": {"major": 1, "minor": 0, "patch": 0},
-            "functions": [
-                {
-                    "name": "my_init",
-                    "c_return_type": "int",
-                    "parameters": [],
-                    "stable_id": "x",
-                }
-            ],
+            "functions": [],
         }
-        input_path.write_text(json.dumps(input_payload, indent=2) + "\n", encoding="utf-8")
-
-        exit_code = abi_framework.command_idl_migrate(
-            argparse.Namespace(
-                input=str(input_path),
-                output=str(output_path),
-                target="demo",
-                to_version=2,
-                check=False,
-            )
-        )
-        self.assertEqual(exit_code, 0)
-        migrated = json.loads(output_path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["idl_schema_version"], 2)
-        self.assertEqual(migrated["idl_schema"], abi_framework.IDL_SCHEMA_URI_V2)
-
-    def test_config_migrate_command(self) -> None:
-        input_path = self.repo_root / "abi" / "legacy.config.json"
-        output_path = self.repo_root / "abi" / "config.v2.json"
-        legacy_config = {
-            "targets": {
-                "demo": {
-                    "header": {
-                        "path": "native/include/demo.h",
-                        "api_macro": "MY_API",
-                        "call_macro": "MY_CALL",
-                        "symbol_prefix": "my_",
-                        "version_macros": {
-                            "major": "MY_ABI_VERSION_MAJOR",
-                            "minor": "MY_ABI_VERSION_MINOR",
-                            "patch": "MY_ABI_VERSION_PATCH",
-                        },
-                    }
-                }
-            }
-        }
-        input_path.parent.mkdir(parents=True, exist_ok=True)
-        input_path.write_text(json.dumps(legacy_config, indent=2) + "\n", encoding="utf-8")
-        exit_code = abi_framework.command_config_migrate(
-            argparse.Namespace(
-                input=str(input_path),
-                output=str(output_path),
-                check=False,
-            )
-        )
-        self.assertEqual(exit_code, 0)
-        migrated = json.loads(output_path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], abi_framework.CONFIG_SCHEMA_VERSION)
-        self.assertEqual(migrated["schema_uri"], abi_framework.CONFIG_SCHEMA_URI_V2)
-        self.assertIn("waiver_requirements", migrated["policy"])
+        with self.assertRaises(abi_framework.AbiFrameworkError):
+            abi_framework.validate_idl_payload(payload, "legacy idl")
 
     def test_waiver_requirements_are_enforced(self) -> None:
         config = {

@@ -14,7 +14,7 @@
   - `additive`
   - `breaking`
 - Enforces ABI semantic-version policy from header macros.
-- Generates ABI IDL JSON from the ABI header (schema v2).
+- Generates ABI IDL JSON from the ABI header (schema v1).
 - Can generate native ABI artifacts from IDL:
   - C header (`native/include/...`)
   - linker export map (`.map`)
@@ -61,15 +61,6 @@ python3 tools/abi_framework/abi_framework.py codegen \
   --skip-binary \
   --check
 
-# Migrate IDL payload to schema v2
-python3 tools/abi_framework/abi_framework.py idl-migrate \
-  --input abi/generated/lumenrtc/lumenrtc.idl.json \
-  --to-version 2
-
-# Migrate config payload to current schema
-python3 tools/abi_framework/abi_framework.py config-migrate \
-  --input abi/config.json
-
 # Sync generated ABI artifacts and optionally baselines
 python3 tools/abi_framework/abi_framework.py sync \
   --repo-root . \
@@ -111,8 +102,6 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
 
 ```json
 {
-  "schema_version": 2,
-  "schema_uri": "https://lumenrtc.dev/abi_framework/config.schema.v2.json",
   "policy": {
     "waiver_requirements": {
       "require_owner": true,
@@ -197,7 +186,7 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
       },
       "codegen": {
         "enabled": true,
-        "idl_schema_version": 2,
+        "idl_schema_version": 1,
         "idl_output_path": "abi/generated/my_target/my_target.idl.json",
         "native_header_output_path": "native/include/my_api.h",
         "native_export_map_output_path": "native/my_api.map",
@@ -240,10 +229,8 @@ Both wrappers expose:
 - `waiver-audit`
 - `benchmark`
 - `benchmark-gate`
-- `config-migrate`
 - `generate`
 - `codegen`
-- `idl-migrate`
 - `sync`
 - `release-prepare`
 - `changelog`

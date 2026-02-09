@@ -22,11 +22,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-TOOL_VERSION = "5.0.0"
-CONFIG_SCHEMA_VERSION = 2
-CONFIG_SCHEMA_URI_V2 = "https://lumenrtc.dev/abi_framework/config.schema.v2.json"
-IDL_SCHEMA_VERSION = 2
-IDL_SCHEMA_URI_V2 = "https://lumenrtc.dev/abi_framework/idl.schema.v2.json"
+TOOL_VERSION = "1.0.0"
+IDL_SCHEMA_VERSION = 1
+IDL_SCHEMA_URI_V1 = "https://lumenrtc.dev/abi_framework/idl.schema.v1.json"
 ATTESTATION_PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
 ATTESTATION_BUILD_TYPE = "https://lumenrtc.dev/abi_framework/release-prepare@v1"
 DEFAULT_WAIVER_REQUIREMENTS = {
@@ -179,7 +177,7 @@ def get_schema_path(kind: str) -> Path:
         "config": base / "config.schema.json",
         "snapshot": base / "snapshot.schema.json",
         "report": base / "report.schema.json",
-        "idl_v2": base / "idl.schema.v2.json",
+        "idl_v1": base / "idl.schema.v1.json",
     }
     if kind not in mapping:
         raise AbiFrameworkError(f"Unknown schema kind: {kind}")
@@ -208,23 +206,6 @@ def require_keys(obj: dict[str, Any], keys: list[str], label: str) -> None:
     missing = [key for key in keys if key not in obj]
     if missing:
         raise AbiFrameworkError(f"{label} is missing required keys: {', '.join(missing)}")
-
-
-def deep_copy_json_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return json.loads(json.dumps(payload))
-
-
-def get_config_schema_version(payload: dict[str, Any]) -> int:
-    raw_version = payload.get("schema_version", 1)
-    if not isinstance(raw_version, int):
-        raise AbiFrameworkError("config.schema_version must be an integer when specified")
-    if raw_version < 1:
-        raise AbiFrameworkError("config.schema_version must be >= 1")
-    if raw_version > CONFIG_SCHEMA_VERSION:
-        raise AbiFrameworkError(
-            f"config.schema_version={raw_version} is newer than this tool supports ({CONFIG_SCHEMA_VERSION})"
-        )
-    return raw_version
 
 
 def validate_policy_object(policy: dict[str, Any], label: str) -> None:
@@ -262,37 +243,9 @@ def validate_policy_object(policy: dict[str, Any], label: str) -> None:
                 raise AbiFrameworkError(f"{label}.waiver_requirements.{key} must be a non-negative integer")
 
 
-def migrate_config_payload_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise AbiFrameworkError("config root must be an object")
-    migrated = deep_copy_json_payload(payload)
-    migrated["schema_version"] = CONFIG_SCHEMA_VERSION
-    migrated["schema_uri"] = CONFIG_SCHEMA_URI_V2
-
-    root_policy = migrated.get("policy")
-    if not isinstance(root_policy, dict):
-        root_policy = {}
-    waiver_requirements = root_policy.get("waiver_requirements")
-    if not isinstance(waiver_requirements, dict):
-        waiver_requirements = {}
-    for key, default_value in DEFAULT_WAIVER_REQUIREMENTS.items():
-        waiver_requirements.setdefault(key, default_value)
-    root_policy["waiver_requirements"] = waiver_requirements
-    migrated["policy"] = root_policy
-    return migrated
-
-
 def validate_config_payload(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         raise AbiFrameworkError("config root must be an object")
-
-    _ = get_config_schema_version(payload)
-    schema_uri = payload.get("schema_uri")
-    if schema_uri is not None and (not isinstance(schema_uri, str) or not schema_uri):
-        raise AbiFrameworkError("config.schema_uri must be a non-empty string when specified")
-    metadata = payload.get("metadata")
-    if metadata is not None and not isinstance(metadata, dict):
-        raise AbiFrameworkError("config.metadata must be an object when specified")
 
     root_policy = payload.get("policy")
     if root_policy is not None and not isinstance(root_policy, dict):
@@ -426,12 +379,16 @@ def validate_config_payload(payload: dict[str, Any]) -> None:
                 value = codegen.get(field_name)
                 if value is not None and not isinstance(value, bool):
                     raise AbiFrameworkError(f"target '{target_name}'.codegen.{field_name} must be a boolean when specified")
-            int_fields = ["idl_schema_version"]
-            for field_name in int_fields:
-                value = codegen.get(field_name)
-                if value is not None and (not isinstance(value, int) or value < 1):
+            idl_schema_version_value = codegen.get("idl_schema_version")
+            if idl_schema_version_value is not None:
+                if not isinstance(idl_schema_version_value, int):
                     raise AbiFrameworkError(
-                        f"target '{target_name}'.codegen.{field_name} must be positive integer when specified"
+                        f"target '{target_name}'.codegen.idl_schema_version must be integer when specified"
+                    )
+                if idl_schema_version_value != IDL_SCHEMA_VERSION:
+                    raise AbiFrameworkError(
+                        f"target '{target_name}'.codegen.idl_schema_version={idl_schema_version_value} is not supported; "
+                        f"only {IDL_SCHEMA_VERSION} is supported"
                     )
             include_symbols = codegen.get("include_symbols")
             if include_symbols is not None:
@@ -509,16 +466,16 @@ def validate_report_payload(payload: dict[str, Any], label: str) -> None:
 def validate_idl_payload(payload: dict[str, Any], label: str) -> None:
     if not isinstance(payload, dict):
         raise AbiFrameworkError(f"{label} root must be an object")
-    schema_version = payload.get("idl_schema_version")
-    if schema_version == 2:
-        validate_with_jsonschema_if_available("idl_v2", payload)
+    schema_version = payload.get("idl_schema_version", IDL_SCHEMA_VERSION)
+    if schema_version != IDL_SCHEMA_VERSION:
+        raise AbiFrameworkError(
+            f"{label} uses unsupported idl_schema_version={schema_version}; only {IDL_SCHEMA_VERSION} is supported"
+        )
+    validate_with_jsonschema_if_available("idl_v1", payload)
 
 
 def load_config(path: Path) -> dict[str, Any]:
     config = load_json(path)
-    version = get_config_schema_version(config)
-    if version < CONFIG_SCHEMA_VERSION:
-        config = migrate_config_payload_to_v2(config)
     validate_config_payload(config)
     return config
 
@@ -1446,9 +1403,14 @@ def resolve_codegen_config(target: dict[str, Any], target_name: str, repo_root: 
     if idl_schema_version_value is None:
         idl_schema_version = IDL_SCHEMA_VERSION
     else:
-        if not isinstance(idl_schema_version_value, int) or idl_schema_version_value < 1:
+        if not isinstance(idl_schema_version_value, int):
             raise AbiFrameworkError(
-                f"target '{target_name}'.codegen.idl_schema_version must be positive integer when specified"
+                f"target '{target_name}'.codegen.idl_schema_version must be integer when specified"
+            )
+        if idl_schema_version_value != IDL_SCHEMA_VERSION:
+            raise AbiFrameworkError(
+                f"target '{target_name}'.codegen.idl_schema_version={idl_schema_version_value} is not supported; "
+                f"only {IDL_SCHEMA_VERSION} is supported"
             )
         idl_schema_version = idl_schema_version_value
 
@@ -1612,13 +1574,8 @@ def build_idl_payload(
             ],
         }
     )
-    idl_schema_version = int(codegen_cfg.get("idl_schema_version", IDL_SCHEMA_VERSION))
-    if idl_schema_version < 1:
-        idl_schema_version = IDL_SCHEMA_VERSION
-    if idl_schema_version == 2:
-        idl_schema_uri = IDL_SCHEMA_URI_V2
-    else:
-        idl_schema_uri = f"https://lumenrtc.dev/abi_framework/idl.schema.v{idl_schema_version}.json"
+    idl_schema_version = IDL_SCHEMA_VERSION
+    idl_schema_uri = IDL_SCHEMA_URI_V1
 
     header_path = str(header.get("path", ""))
     parser_info = header.get("parser")
@@ -1661,52 +1618,6 @@ def build_idl_payload(
         },
     }
     return payload
-
-
-def migrate_idl_payload_to_v2(payload: dict[str, Any], target_hint: str | None = None) -> dict[str, Any]:
-    out = json.loads(json.dumps(payload))
-    if not isinstance(out, dict):
-        raise AbiFrameworkError("IDL payload root must be an object")
-
-    out["idl_schema_version"] = 2
-    out["idl_schema"] = IDL_SCHEMA_URI_V2
-
-    target = out.get("target")
-    if not isinstance(target, str) or not target:
-        out["target"] = target_hint or "unknown"
-
-    source = out.get("source")
-    if not isinstance(source, dict):
-        source = {}
-    if "header_path" not in source:
-        source["header_path"] = ""
-    if "parser_backend" not in source:
-        source["parser_backend"] = None
-    out["source"] = source
-
-    functions = out.get("functions")
-    if not isinstance(functions, list):
-        functions = []
-    normalized_functions: list[dict[str, Any]] = []
-    for item in functions:
-        if not isinstance(item, dict):
-            continue
-        record = dict(item)
-        if "documentation" not in record:
-            record["documentation"] = ""
-        if "deprecated" not in record:
-            record["deprecated"] = False
-        availability = record.get("availability")
-        if not isinstance(availability, dict):
-            availability = {}
-        if "since_abi" not in availability:
-            abi_version = out.get("abi_version")
-            availability["since_abi"] = version_dict_to_str(abi_version)
-        record["availability"] = availability
-        normalized_functions.append(record)
-    out["functions"] = normalized_functions
-
-    return out
 
 
 def is_c_typedef_name(value: str) -> bool:
@@ -4741,59 +4652,6 @@ def command_benchmark_gate(args: argparse.Namespace) -> int:
     return 1
 
 
-def command_config_migrate(args: argparse.Namespace) -> int:
-    input_path = Path(args.input).resolve()
-    if not input_path.exists():
-        raise AbiFrameworkError(f"Config input file not found: {input_path}")
-    output_path = Path(args.output).resolve() if args.output else input_path
-
-    payload = load_json(input_path)
-    migrated = migrate_config_payload_to_v2(payload)
-    validate_config_payload(migrated)
-
-    content = json.dumps(migrated, indent=2, sort_keys=True) + "\n"
-    if bool(args.check):
-        existing_payload = load_json(output_path) if output_path.exists() else None
-        if isinstance(existing_payload, dict) and migrate_config_payload_to_v2(existing_payload) == migrated:
-            print(f"config-migrate check: up to date ({output_path})")
-            return 0
-        print(f"config-migrate check: drift detected ({output_path})")
-        return 1
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(content, encoding="utf-8")
-    print(f"config-migrate: wrote schema v{CONFIG_SCHEMA_VERSION} config -> {output_path}")
-    return 0
-
-
-def command_idl_migrate(args: argparse.Namespace) -> int:
-    input_path = Path(args.input).resolve()
-    if not input_path.exists():
-        raise AbiFrameworkError(f"IDL input file not found: {input_path}")
-    output_path = Path(args.output).resolve() if args.output else input_path
-    to_version = int(args.to_version)
-    if to_version != 2:
-        raise AbiFrameworkError("Only --to-version 2 is currently supported.")
-
-    payload = load_json(input_path)
-    migrated = migrate_idl_payload_to_v2(payload, target_hint=args.target)
-    validate_idl_payload(migrated, f"migrated IDL '{output_path}'")
-    content = json.dumps(migrated, indent=2, sort_keys=True) + "\n"
-    old_content = read_text_if_exists(output_path)
-
-    if args.check:
-        if old_content == content:
-            print(f"idl-migrate check: up to date ({output_path})")
-            return 0
-        print(f"idl-migrate check: drift detected ({output_path})")
-        return 1
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(content, encoding="utf-8")
-    print(f"idl-migrate: wrote v2 schema payload -> {output_path}")
-    return 0
-
-
 def command_codegen(args: argparse.Namespace) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_config(Path(args.config).resolve())
@@ -5956,8 +5814,6 @@ def command_init_target(args: argparse.Namespace) -> int:
         config = load_config(config_path)
     else:
         config = {
-            "schema_version": CONFIG_SCHEMA_VERSION,
-            "schema_uri": CONFIG_SCHEMA_URI_V2,
             "policy": {
                 "waiver_requirements": dict(DEFAULT_WAIVER_REQUIREMENTS),
             },
@@ -6023,8 +5879,6 @@ def command_init_target(args: argparse.Namespace) -> int:
         }
 
     targets[args.target] = target_entry
-    config["schema_version"] = CONFIG_SCHEMA_VERSION
-    config["schema_uri"] = CONFIG_SCHEMA_URI_V2
     if not isinstance(config.get("policy"), dict):
         config["policy"] = {}
     root_policy = config["policy"]
@@ -6254,20 +6108,6 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("--sarif-report", help="Write diff report as SARIF.")
     diff.add_argument("--fail-on-warnings", action="store_true", help="Treat warnings as failures.")
     diff.set_defaults(func=command_diff)
-
-    idl_migrate = sub.add_parser("idl-migrate", help="Migrate ABI IDL payload to schema v2.")
-    idl_migrate.add_argument("--input", required=True, help="Input IDL JSON path.")
-    idl_migrate.add_argument("--output", help="Output IDL JSON path. Defaults to --input.")
-    idl_migrate.add_argument("--target", help="Optional target hint if target is missing in payload.")
-    idl_migrate.add_argument("--to-version", default=2, type=int, help="Target schema version (currently only 2).")
-    idl_migrate.add_argument("--check", action="store_true", help="Fail if migrated output differs from file on disk.")
-    idl_migrate.set_defaults(func=command_idl_migrate)
-
-    config_migrate = sub.add_parser("config-migrate", help="Migrate ABI config payload to current schema version.")
-    config_migrate.add_argument("--input", required=True, help="Input config JSON path.")
-    config_migrate.add_argument("--output", help="Output config JSON path. Defaults to --input.")
-    config_migrate.add_argument("--check", action="store_true", help="Fail if migrated output differs from file on disk.")
-    config_migrate.set_defaults(func=command_config_migrate)
 
     benchmark = sub.add_parser("benchmark", help="Benchmark ABI pipeline timings.")
     benchmark.add_argument(

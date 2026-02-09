@@ -1,14 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lumenrtc.dev/abi_framework/config.schema.v2.json",
+  "$id": "https://lumenrtc.dev/abi_framework/config.schema.v1.json",
   "title": "abi_framework config",
   "type": "object",
   "required": ["targets"],
   "additionalProperties": true,
   "properties": {
-    "schema_version": { "type": "integer", "minimum": 1 },
-    "schema_uri": { "type": "string", "minLength": 1 },
-    "metadata": { "type": "object", "additionalProperties": true },
     "policy": {
       "type": "object",
       "additionalProperties": true,
@@ -175,7 +172,7 @@
             "additionalProperties": true,
             "properties": {
               "enabled": { "type": "boolean" },
-              "idl_schema_version": { "type": "integer", "minimum": 1 },
+              "idl_schema_version": { "type": "integer", "const": 1 },
               "idl_output_path": { "type": "string", "minLength": 1 },
               "native_header_output_path": { "type": "string", "minLength": 1 },
               "native_export_map_output_path": { "type": "string", "minLength": 1 },
