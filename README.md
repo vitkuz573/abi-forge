@@ -178,6 +178,12 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
       },
       "bindings": {
         "expected_symbols": ["my_init", "my_shutdown"],
+        "metadata_path": "abi/bindings/my_target.bindings.json",
+        "metadata": {
+          "managed": {
+            "runtime": "dotnet"
+          }
+        },
         "symbol_docs": {
           "my_init": "Initializes runtime state."
         },
@@ -223,6 +229,7 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
 Notes:
 
 - `bindings.expected_symbols` is optional but recommended.
+- `bindings.metadata_path` and `bindings.metadata` are target-agnostic metadata inputs merged into `idl.bindings`.
 - `codegen` command runs IDL generation plus configured language generators.
 - If `codegen.native_header_output_path`/`codegen.native_export_map_output_path` are set,
   `generate`/`codegen`/`sync` also refresh native ABI artifacts from IDL.
@@ -245,6 +252,7 @@ Both wrappers expose:
 - `waiver-audit`
 - `benchmark`
 - `benchmark-gate`
+- `guardrails`
 - `generate`
 - `codegen`
 - `sync`

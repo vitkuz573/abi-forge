@@ -346,10 +346,21 @@ def validate_config_payload(payload: dict[str, Any]) -> None:
                     raise AbiFrameworkError(
                         f"target '{target_name}'.bindings.interop_metadata_path must be a non-empty string"
                     )
+            metadata_path = bindings.get("metadata_path")
+            if metadata_path is not None:
+                if not isinstance(metadata_path, str) or not metadata_path:
+                    raise AbiFrameworkError(
+                        f"target '{target_name}'.bindings.metadata_path must be a non-empty string"
+                    )
             interop_metadata = bindings.get("interop_metadata")
             if interop_metadata is not None and not isinstance(interop_metadata, dict):
                 raise AbiFrameworkError(
                     f"target '{target_name}'.bindings.interop_metadata must be an object when specified"
+                )
+            metadata = bindings.get("metadata")
+            if metadata is not None and not isinstance(metadata, dict):
+                raise AbiFrameworkError(
+                    f"target '{target_name}'.bindings.metadata must be an object when specified"
                 )
             generators = bindings.get("generators")
             if generators is not None:

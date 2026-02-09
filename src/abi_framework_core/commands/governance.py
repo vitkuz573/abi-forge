@@ -209,6 +209,7 @@ def command_doctor(args: argparse.Namespace) -> int:
             if not idl_output.parent.exists():
                 issues.append(("warning", target_name, f"IDL output parent does not exist yet: {idl_output.parent}"))
 
+            resolve_bindings_metadata(target=target, target_name=target_name, repo_root=repo_root)
             normalize_generator_entries(target_name=target_name, target=target)
 
         except AbiFrameworkError as exc:
@@ -344,5 +345,4 @@ def command_changelog(args: argparse.Namespace) -> int:
     if bool(args.fail_on_warnings) and has_warnings:
         return 1
     return 0
-
 

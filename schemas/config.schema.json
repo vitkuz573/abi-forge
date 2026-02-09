@@ -157,6 +157,10 @@
                 "type": "string",
                 "minLength": 1
               },
+              "metadata_path": {
+                "type": "string",
+                "minLength": 1
+              },
               "interop_metadata": {
                 "type": "object",
                 "additionalProperties": true,
@@ -189,6 +193,10 @@
                     }
                   }
                 }
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": true
               },
               "generators": {
                 "type": "array",

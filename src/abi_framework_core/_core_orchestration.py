@@ -44,12 +44,12 @@ def build_codegen_for_target(
         skip_binary=skip_binary,
     )
     codegen_cfg = resolve_codegen_config(target=target, target_name=target_name, repo_root=repo_root)
-    interop_metadata = resolve_interop_metadata(target=target, target_name=target_name, repo_root=repo_root)
+    bindings_metadata = resolve_bindings_metadata(target=target, target_name=target_name, repo_root=repo_root)
     idl_payload = build_idl_payload(
         target_name=target_name,
         snapshot=snapshot,
         codegen_cfg=codegen_cfg,
-        interop_metadata=interop_metadata,
+        bindings_metadata=bindings_metadata,
     )
     validate_idl_payload(idl_payload, f"generated IDL payload '{target_name}'")
 

@@ -243,44 +243,102 @@ def _merge_nested_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[
     return out
 
 
-def resolve_interop_metadata(target: dict[str, Any], target_name: str, repo_root: Path) -> dict[str, Any]:
+def _load_bindings_metadata_object(
+    *,
+    repo_root: Path,
+    target_name: str,
+    path_value: str,
+    field_name: str,
+) -> dict[str, Any]:
+    metadata_path = ensure_relative_path(repo_root, path_value).resolve()
+    try:
+        text = metadata_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AbiFrameworkError(
+            f"Unable to read target '{target_name}'.bindings.{field_name} from '{metadata_path}': {exc}"
+        ) from exc
+
+    try:
+        loaded = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise AbiFrameworkError(
+            f"target '{target_name}'.bindings.{field_name} points to invalid JSON '{metadata_path}': {exc}"
+        ) from exc
+
+    if not isinstance(loaded, dict):
+        raise AbiFrameworkError(
+            f"target '{target_name}'.bindings.{field_name} must resolve to a JSON object"
+        )
+
+    return loaded
+
+
+def resolve_bindings_metadata(target: dict[str, Any], target_name: str, repo_root: Path) -> dict[str, Any]:
     bindings_cfg = target.get("bindings")
     if not isinstance(bindings_cfg, dict):
         return {}
 
     metadata: dict[str, Any] = {}
+    legacy_interop_metadata: dict[str, Any] = {}
 
-    metadata_path_value = bindings_cfg.get("interop_metadata_path")
-    if isinstance(metadata_path_value, str) and metadata_path_value:
-        metadata_path = ensure_relative_path(repo_root, metadata_path_value).resolve()
-        try:
-            text = metadata_path.read_text(encoding="utf-8")
-        except OSError as exc:
+    interop_metadata_path_value = bindings_cfg.get("interop_metadata_path")
+    if interop_metadata_path_value is not None:
+        if not isinstance(interop_metadata_path_value, str) or not interop_metadata_path_value:
             raise AbiFrameworkError(
-                f"Unable to read interop metadata '{metadata_path}': {exc}"
-            ) from exc
-        try:
-            loaded = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise AbiFrameworkError(
-                f"Interop metadata '{metadata_path}' is not valid JSON: {exc}"
-            ) from exc
-        if not isinstance(loaded, dict):
-            raise AbiFrameworkError(
-                f"Interop metadata '{metadata_path}' must be a JSON object"
+                f"target '{target_name}'.bindings.interop_metadata_path must be a non-empty string when specified"
             )
-        metadata = loaded
-
-    inline = bindings_cfg.get("interop_metadata")
-    if isinstance(inline, dict) and inline:
-        metadata = _merge_nested_dicts(metadata, inline)
-
-    if metadata and not isinstance(metadata, dict):
-        raise AbiFrameworkError(
-            f"target '{target_name}'.bindings.interop_metadata must resolve to an object"
+        loaded = _load_bindings_metadata_object(
+            repo_root=repo_root,
+            target_name=target_name,
+            path_value=interop_metadata_path_value,
+            field_name="interop_metadata_path",
         )
+        legacy_interop_metadata = _merge_nested_dicts(legacy_interop_metadata, loaded)
+
+    interop_inline = bindings_cfg.get("interop_metadata")
+    if interop_inline is not None:
+        if not isinstance(interop_inline, dict):
+            raise AbiFrameworkError(
+                f"target '{target_name}'.bindings.interop_metadata must be an object when specified"
+            )
+        if interop_inline:
+            legacy_interop_metadata = _merge_nested_dicts(legacy_interop_metadata, interop_inline)
+
+    if legacy_interop_metadata:
+        metadata = _merge_nested_dicts(metadata, {"interop": legacy_interop_metadata})
+
+    metadata_path_value = bindings_cfg.get("metadata_path")
+    if metadata_path_value is not None:
+        if not isinstance(metadata_path_value, str) or not metadata_path_value:
+            raise AbiFrameworkError(
+                f"target '{target_name}'.bindings.metadata_path must be a non-empty string when specified"
+            )
+        loaded = _load_bindings_metadata_object(
+            repo_root=repo_root,
+            target_name=target_name,
+            path_value=metadata_path_value,
+            field_name="metadata_path",
+        )
+        metadata = _merge_nested_dicts(metadata, loaded)
+
+    metadata_inline = bindings_cfg.get("metadata")
+    if metadata_inline is not None:
+        if not isinstance(metadata_inline, dict):
+            raise AbiFrameworkError(
+                f"target '{target_name}'.bindings.metadata must be an object when specified"
+            )
+        if metadata_inline:
+            metadata = _merge_nested_dicts(metadata, metadata_inline)
 
     return metadata
+
+
+def resolve_interop_metadata(target: dict[str, Any], target_name: str, repo_root: Path) -> dict[str, Any]:
+    metadata = resolve_bindings_metadata(target=target, target_name=target_name, repo_root=repo_root)
+    interop = metadata.get("interop")
+    if isinstance(interop, dict):
+        return interop
+    return {}
 
 
 def include_symbol_for_codegen(symbol: str, config: dict[str, Any]) -> bool:
@@ -383,7 +441,7 @@ def build_idl_payload(
     target_name: str,
     snapshot: dict[str, Any],
     codegen_cfg: dict[str, Any],
-    interop_metadata: dict[str, Any] | None = None,
+    bindings_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     records = build_function_idl_records(target_name=target_name, snapshot=snapshot, codegen_cfg=codegen_cfg)
     header = snapshot.get("header")
@@ -446,10 +504,8 @@ def build_idl_payload(
             "exclude_symbols": sorted(codegen_cfg.get("exclude_symbols", [])),
         },
     }
-    if interop_metadata:
-        payload["bindings"] = {
-            "interop": interop_metadata,
-        }
+    if bindings_metadata:
+        payload["bindings"] = bindings_metadata
     return payload
 
 

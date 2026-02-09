@@ -516,6 +516,74 @@ typedef void (LUMENRTC_CALL *lrtc_void_cb)(void* user_data);
         self.assertEqual(exit_code, 0)
         self.assertTrue(marker_path.exists())
 
+    def test_bindings_metadata_path_and_inline_merge_into_idl(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        config = abi_framework.load_json(config_path)
+
+        metadata_path = self.repo_root / "abi" / "bindings" / "demo.bindings.json"
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "interop": {
+                        "string_encoding": "utf8",
+                        "opaque_types": {
+                            "my_handle_t": {"release": "my_release"},
+                        },
+                    },
+                    "swift": {"module": "DemoRtc"},
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        bindings = config["targets"]["demo"]["bindings"]
+        bindings["metadata_path"] = "abi/bindings/demo.bindings.json"
+        bindings["metadata"] = {
+            "interop": {"string_encoding": "utf16"},
+            "managed": {"runtime": "dotnet"},
+        }
+        abi_framework.write_json(config_path, config)
+
+        self._run_generate_for_demo()
+        idl = abi_framework.load_json(self.repo_root / "abi" / "generated" / "demo" / "demo.idl.json")
+        bindings_payload = idl.get("bindings")
+        self.assertIsInstance(bindings_payload, dict)
+
+        interop_payload = bindings_payload.get("interop")
+        self.assertIsInstance(interop_payload, dict)
+        self.assertEqual(interop_payload.get("string_encoding"), "utf16")
+        self.assertIn("opaque_types", interop_payload)
+
+        swift_payload = bindings_payload.get("swift")
+        self.assertIsInstance(swift_payload, dict)
+        self.assertEqual(swift_payload.get("module"), "DemoRtc")
+
+        managed_payload = bindings_payload.get("managed")
+        self.assertIsInstance(managed_payload, dict)
+        self.assertEqual(managed_payload.get("runtime"), "dotnet")
+
+    def test_bindings_metadata_must_be_object(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        config = abi_framework.load_json(config_path)
+        config["targets"]["demo"]["bindings"]["metadata"] = "invalid"
+        abi_framework.write_json(config_path, config)
+
+        with self.assertRaises(abi_framework.AbiFrameworkError):
+            _ = abi_framework.load_config(config_path)
+
+    def test_bindings_metadata_path_must_be_string(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        config = abi_framework.load_json(config_path)
+        config["targets"]["demo"]["bindings"]["metadata_path"] = 123
+        abi_framework.write_json(config_path, config)
+
+        with self.assertRaises(abi_framework.AbiFrameworkError):
+            _ = abi_framework.load_config(config_path)
+
     def test_benchmark_command(self) -> None:
         output_path = self.repo_root / "artifacts" / "benchmark.json"
         exit_code = abi_framework.command_benchmark(
