@@ -20,7 +20,7 @@
   - linker export map (`.map`)
 - Runs language generator plugins from config (`bindings.generators`).
 - Supports parser backends (`regex`, `clang_preprocess`) for ABI extraction.
-- Supports policy rules and TTL-based waivers.
+- Supports policy rules, waiver metadata requirements, TTL guardrails, and waiver audits.
 - Supports multi-target configs, changelog output, SARIF output, and release pipeline orchestration.
 
 ## Core commands
@@ -66,6 +66,10 @@ python3 tools/abi_framework/abi_framework.py idl-migrate \
   --input abi/generated/lumenrtc/lumenrtc.idl.json \
   --to-version 2
 
+# Migrate config payload to current schema
+python3 tools/abi_framework/abi_framework.py config-migrate \
+  --input abi/config.json
+
 # Sync generated ABI artifacts and optionally baselines
 python3 tools/abi_framework/abi_framework.py sync \
   --repo-root . \
@@ -80,12 +84,26 @@ python3 tools/abi_framework/abi_framework.py benchmark \
   --iterations 3 \
   --output artifacts/abi/benchmark.report.json
 
+# Enforce benchmark budgets
+python3 tools/abi_framework/abi_framework.py benchmark-gate \
+  --report artifacts/abi/benchmark.report.json \
+  --budget abi/benchmark_budget.json \
+  --output artifacts/abi/benchmark.gate.report.json
+
+# Audit waiver expiry/metadata
+python3 tools/abi_framework/abi_framework.py waiver-audit \
+  --config abi/config.json \
+  --fail-on-expired \
+  --fail-on-missing-metadata
+
 # End-to-end release preparation pipeline
 python3 tools/abi_framework/abi_framework.py release-prepare \
   --repo-root . \
   --config abi/config.json \
   --skip-binary \
   --release-tag v1.2.3 \
+  --emit-sbom \
+  --emit-attestation \
   --output-dir artifacts/abi/release
 ```
 
@@ -93,6 +111,19 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
 
 ```json
 {
+  "schema_version": 2,
+  "schema_uri": "https://lumenrtc.dev/abi_framework/config.schema.v2.json",
+  "policy": {
+    "waiver_requirements": {
+      "require_owner": true,
+      "require_reason": true,
+      "require_expires_utc": true,
+      "require_approved_by": true,
+      "require_ticket": true,
+      "max_ttl_days": 90,
+      "warn_expiring_within_days": 21
+    }
+  },
   "targets": {
     "my_target": {
       "baseline_path": "abi/baselines/my_target.json",
@@ -131,8 +162,11 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
             "severity": "warning",
             "pattern": "known non-critical warning",
             "targets": ["^my_target$"],
+            "created_utc": "2026-06-01T00:00:00Z",
             "expires_utc": "2026-12-31T00:00:00Z",
             "owner": "team-abi",
+            "approved_by": "architecture-board",
+            "ticket": "ABI-1234",
             "reason": "Temporary upstream transition"
           }
         ]
@@ -203,7 +237,10 @@ Both wrappers expose:
 - `baseline-all`
 - `regen` / `regen-baselines`
 - `doctor`
+- `waiver-audit`
 - `benchmark`
+- `benchmark-gate`
+- `config-migrate`
 - `generate`
 - `codegen`
 - `idl-migrate`
@@ -215,3 +252,8 @@ Both wrappers expose:
 - `list-targets`
 - `init-target`
 - `diff`
+
+Generator templates:
+
+- `tools/abi_framework/generator_sdk/README.md`
+- `tools/abi_framework/generator_sdk/external_generator_stub.py`

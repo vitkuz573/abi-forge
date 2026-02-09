@@ -567,6 +567,182 @@ typedef void (LUMENRTC_CALL *lrtc_void_cb)(void* user_data);
         self.assertEqual(migrated["idl_schema_version"], 2)
         self.assertEqual(migrated["idl_schema"], abi_framework.IDL_SCHEMA_URI_V2)
 
+    def test_config_migrate_command(self) -> None:
+        input_path = self.repo_root / "abi" / "legacy.config.json"
+        output_path = self.repo_root / "abi" / "config.v2.json"
+        legacy_config = {
+            "targets": {
+                "demo": {
+                    "header": {
+                        "path": "native/include/demo.h",
+                        "api_macro": "MY_API",
+                        "call_macro": "MY_CALL",
+                        "symbol_prefix": "my_",
+                        "version_macros": {
+                            "major": "MY_ABI_VERSION_MAJOR",
+                            "minor": "MY_ABI_VERSION_MINOR",
+                            "patch": "MY_ABI_VERSION_PATCH",
+                        },
+                    }
+                }
+            }
+        }
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        input_path.write_text(json.dumps(legacy_config, indent=2) + "\n", encoding="utf-8")
+        exit_code = abi_framework.command_config_migrate(
+            argparse.Namespace(
+                input=str(input_path),
+                output=str(output_path),
+                check=False,
+            )
+        )
+        self.assertEqual(exit_code, 0)
+        migrated = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], abi_framework.CONFIG_SCHEMA_VERSION)
+        self.assertEqual(migrated["schema_uri"], abi_framework.CONFIG_SCHEMA_URI_V2)
+        self.assertIn("waiver_requirements", migrated["policy"])
+
+    def test_waiver_requirements_are_enforced(self) -> None:
+        config = {
+            "targets": {
+                "demo": {
+                    "header": {
+                        "path": "native/include/demo.h",
+                        "api_macro": "MY_API",
+                        "call_macro": "MY_CALL",
+                        "symbol_prefix": "my_",
+                        "version_macros": {
+                            "major": "MY_ABI_VERSION_MAJOR",
+                            "minor": "MY_ABI_VERSION_MINOR",
+                            "patch": "MY_ABI_VERSION_PATCH",
+                        },
+                    },
+                    "policy": {
+                        "waiver_requirements": {
+                            "require_owner": True,
+                            "require_reason": True,
+                            "require_expires_utc": True,
+                        },
+                        "waivers": [
+                            {
+                                "id": "missing-fields",
+                                "severity": "warning",
+                                "pattern": "drift",
+                                "targets": ["^demo$"],
+                            }
+                        ],
+                    },
+                }
+            }
+        }
+        with self.assertRaises(abi_framework.AbiFrameworkError):
+            _ = abi_framework.resolve_effective_policy(config=config, target_name="demo")
+
+    def test_waiver_audit_detects_expired(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        config = abi_framework.load_json(config_path)
+        config["policy"] = {
+            "waiver_requirements": {
+                "require_owner": True,
+                "require_reason": True,
+                "require_expires_utc": True,
+                "require_approved_by": False,
+                "require_ticket": False,
+                "max_ttl_days": 500,
+                "warn_expiring_within_days": 30,
+            }
+        }
+        config["targets"]["demo"]["policy"] = {
+            "waivers": [
+                {
+                    "id": "expired-waiver",
+                    "severity": "warning",
+                    "pattern": "demo",
+                    "targets": ["^demo$"],
+                    "created_utc": "2024-01-01T00:00:00Z",
+                    "expires_utc": "2025-01-01T00:00:00Z",
+                    "owner": "abi-team",
+                    "reason": "temporary",
+                }
+            ]
+        }
+        abi_framework.write_json(config_path, config)
+
+        exit_code = abi_framework.command_waiver_audit(
+            argparse.Namespace(
+                config=str(config_path),
+                target="demo",
+                output=str(self.repo_root / "artifacts" / "waiver.audit.json"),
+                print_json=False,
+                fail_on_expired=True,
+                fail_on_missing_metadata=False,
+                fail_on_expiring_soon=False,
+            )
+        )
+        self.assertEqual(exit_code, 1)
+
+    def test_benchmark_gate_detects_violation(self) -> None:
+        report_path = self.repo_root / "artifacts" / "bench.json"
+        budget_path = self.repo_root / "abi" / "bench.budget.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_payload = {
+            "targets": {
+                "demo": {
+                    "snapshot_ms": {"mean_ms": 100.0, "p95_ms": 150.0},
+                }
+            }
+        }
+        budget_payload = {
+            "targets": {
+                "demo": {
+                    "snapshot_ms": {
+                        "mean_ms_max": 50.0,
+                    }
+                }
+            }
+        }
+        report_path.write_text(json.dumps(report_payload, indent=2) + "\n", encoding="utf-8")
+        budget_path.write_text(json.dumps(budget_payload, indent=2) + "\n", encoding="utf-8")
+
+        exit_code = abi_framework.command_benchmark_gate(
+            argparse.Namespace(
+                report=str(report_path),
+                budget=str(budget_path),
+                output=str(self.repo_root / "artifacts" / "bench.gate.json"),
+            )
+        )
+        self.assertEqual(exit_code, 1)
+
+    def test_release_prepare_emits_sbom_and_attestation(self) -> None:
+        self._run_generate_for_demo()
+        changelog_path = self.repo_root / "abi" / "CHANGELOG.md"
+        output_dir = self.repo_root / "artifacts" / "release-enterprise"
+        exit_code = abi_framework.command_release_prepare(
+            argparse.Namespace(
+                repo_root=str(self.repo_root),
+                config=str(self.repo_root / "abi" / "config.json"),
+                baseline_root=None,
+                binary=None,
+                skip_binary=True,
+                require_binaries=False,
+                update_baselines=False,
+                check_generated=True,
+                print_diff=False,
+                fail_on_sync=True,
+                fail_on_warnings=False,
+                release_tag="v1.0.0",
+                title="ABI Changelog",
+                changelog_output=str(changelog_path),
+                output_dir=str(output_dir),
+                benchmark_budget=None,
+                emit_sbom=True,
+                emit_attestation=True,
+            )
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertTrue((output_dir / "release.sbom.cdx.json").exists())
+        self.assertTrue((output_dir / "release.attestation.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,13 +17,27 @@ import shlex
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-TOOL_VERSION = "4.0.0"
+TOOL_VERSION = "5.0.0"
+CONFIG_SCHEMA_VERSION = 2
+CONFIG_SCHEMA_URI_V2 = "https://lumenrtc.dev/abi_framework/config.schema.v2.json"
 IDL_SCHEMA_VERSION = 2
 IDL_SCHEMA_URI_V2 = "https://lumenrtc.dev/abi_framework/idl.schema.v2.json"
+ATTESTATION_PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
+ATTESTATION_BUILD_TYPE = "https://lumenrtc.dev/abi_framework/release-prepare@v1"
+DEFAULT_WAIVER_REQUIREMENTS = {
+    "require_owner": False,
+    "require_reason": False,
+    "require_expires_utc": False,
+    "require_approved_by": False,
+    "require_ticket": False,
+    "max_ttl_days": None,
+    "warn_expiring_within_days": 30,
+}
 
 
 class AbiFrameworkError(Exception):
@@ -85,8 +99,11 @@ class PolicyWaiver:
     severity: str
     message_pattern: re.Pattern[str]
     expires_utc: str | None
+    created_utc: str | None
     owner: str | None
     reason: str | None
+    approved_by: str | None
+    ticket: str | None
 
 
 def normalize_ws(value: str) -> str:
@@ -193,26 +210,95 @@ def require_keys(obj: dict[str, Any], keys: list[str], label: str) -> None:
         raise AbiFrameworkError(f"{label} is missing required keys: {', '.join(missing)}")
 
 
+def deep_copy_json_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(json.dumps(payload))
+
+
+def get_config_schema_version(payload: dict[str, Any]) -> int:
+    raw_version = payload.get("schema_version", 1)
+    if not isinstance(raw_version, int):
+        raise AbiFrameworkError("config.schema_version must be an integer when specified")
+    if raw_version < 1:
+        raise AbiFrameworkError("config.schema_version must be >= 1")
+    if raw_version > CONFIG_SCHEMA_VERSION:
+        raise AbiFrameworkError(
+            f"config.schema_version={raw_version} is newer than this tool supports ({CONFIG_SCHEMA_VERSION})"
+        )
+    return raw_version
+
+
+def validate_policy_object(policy: dict[str, Any], label: str) -> None:
+    classification = policy.get("max_allowed_classification")
+    if classification is not None and classification not in {"none", "additive", "breaking"}:
+        raise AbiFrameworkError(f"{label}.max_allowed_classification must be none/additive/breaking")
+    for bool_key in ["fail_on_warnings", "require_layout_probe"]:
+        value = policy.get(bool_key)
+        if value is not None and not isinstance(value, bool):
+            raise AbiFrameworkError(f"{label}.{bool_key} must be boolean when specified")
+    rules_value = policy.get("rules")
+    if rules_value is not None and not isinstance(rules_value, list):
+        raise AbiFrameworkError(f"{label}.rules must be an array when specified")
+    waivers_value = policy.get("waivers")
+    if waivers_value is not None and not isinstance(waivers_value, list):
+        raise AbiFrameworkError(f"{label}.waivers must be an array when specified")
+
+    requirements = policy.get("waiver_requirements")
+    if requirements is not None:
+        if not isinstance(requirements, dict):
+            raise AbiFrameworkError(f"{label}.waiver_requirements must be an object when specified")
+        for key in [
+            "require_owner",
+            "require_reason",
+            "require_expires_utc",
+            "require_approved_by",
+            "require_ticket",
+        ]:
+            value = requirements.get(key)
+            if value is not None and not isinstance(value, bool):
+                raise AbiFrameworkError(f"{label}.waiver_requirements.{key} must be boolean when specified")
+        for key in ["max_ttl_days", "warn_expiring_within_days"]:
+            value = requirements.get(key)
+            if value is not None and (not isinstance(value, int) or value < 0):
+                raise AbiFrameworkError(f"{label}.waiver_requirements.{key} must be a non-negative integer")
+
+
+def migrate_config_payload_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise AbiFrameworkError("config root must be an object")
+    migrated = deep_copy_json_payload(payload)
+    migrated["schema_version"] = CONFIG_SCHEMA_VERSION
+    migrated["schema_uri"] = CONFIG_SCHEMA_URI_V2
+
+    root_policy = migrated.get("policy")
+    if not isinstance(root_policy, dict):
+        root_policy = {}
+    waiver_requirements = root_policy.get("waiver_requirements")
+    if not isinstance(waiver_requirements, dict):
+        waiver_requirements = {}
+    for key, default_value in DEFAULT_WAIVER_REQUIREMENTS.items():
+        waiver_requirements.setdefault(key, default_value)
+    root_policy["waiver_requirements"] = waiver_requirements
+    migrated["policy"] = root_policy
+    return migrated
+
+
 def validate_config_payload(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         raise AbiFrameworkError("config root must be an object")
+
+    _ = get_config_schema_version(payload)
+    schema_uri = payload.get("schema_uri")
+    if schema_uri is not None and (not isinstance(schema_uri, str) or not schema_uri):
+        raise AbiFrameworkError("config.schema_uri must be a non-empty string when specified")
+    metadata = payload.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        raise AbiFrameworkError("config.metadata must be an object when specified")
+
     root_policy = payload.get("policy")
     if root_policy is not None and not isinstance(root_policy, dict):
         raise AbiFrameworkError("config.policy must be an object when specified")
     if isinstance(root_policy, dict):
-        classification = root_policy.get("max_allowed_classification")
-        if classification is not None and classification not in {"none", "additive", "breaking"}:
-            raise AbiFrameworkError("config.policy.max_allowed_classification must be none/additive/breaking")
-        for bool_key in ["fail_on_warnings", "require_layout_probe"]:
-            value = root_policy.get(bool_key)
-            if value is not None and not isinstance(value, bool):
-                raise AbiFrameworkError(f"config.policy.{bool_key} must be boolean when specified")
-        rules_value = root_policy.get("rules")
-        if rules_value is not None and not isinstance(rules_value, list):
-            raise AbiFrameworkError("config.policy.rules must be an array when specified")
-        waivers_value = root_policy.get("waivers")
-        if waivers_value is not None and not isinstance(waivers_value, list):
-            raise AbiFrameworkError("config.policy.waivers must be an array when specified")
+        validate_policy_object(root_policy, "config.policy")
     targets = payload.get("targets")
     if not isinstance(targets, dict) or not targets:
         raise AbiFrameworkError("config must define non-empty 'targets' object")
@@ -315,21 +401,7 @@ def validate_config_payload(payload: dict[str, Any]) -> None:
         if target_policy is not None:
             if not isinstance(target_policy, dict):
                 raise AbiFrameworkError(f"target '{target_name}'.policy must be an object when specified")
-            classification = target_policy.get("max_allowed_classification")
-            if classification is not None and classification not in {"none", "additive", "breaking"}:
-                raise AbiFrameworkError(
-                    f"target '{target_name}'.policy.max_allowed_classification must be none/additive/breaking"
-                )
-            for bool_key in ["fail_on_warnings", "require_layout_probe"]:
-                value = target_policy.get(bool_key)
-                if value is not None and not isinstance(value, bool):
-                    raise AbiFrameworkError(f"target '{target_name}'.policy.{bool_key} must be boolean when specified")
-            rules_value = target_policy.get("rules")
-            if rules_value is not None and not isinstance(rules_value, list):
-                raise AbiFrameworkError(f"target '{target_name}'.policy.rules must be an array when specified")
-            waivers_value = target_policy.get("waivers")
-            if waivers_value is not None and not isinstance(waivers_value, list):
-                raise AbiFrameworkError(f"target '{target_name}'.policy.waivers must be an array when specified")
+            validate_policy_object(target_policy, f"target '{target_name}'.policy")
 
         codegen = target.get("codegen")
         if codegen is not None:
@@ -444,6 +516,9 @@ def validate_idl_payload(payload: dict[str, Any], label: str) -> None:
 
 def load_config(path: Path) -> dict[str, Any]:
     config = load_json(path)
+    version = get_config_schema_version(config)
+    if version < CONFIG_SCHEMA_VERSION:
+        config = migrate_config_payload_to_v2(config)
     validate_config_payload(config)
     return config
 
@@ -3745,11 +3820,51 @@ def normalize_policy_rules(raw_rules: Any, label: str) -> list[PolicyRule]:
     return out
 
 
-def normalize_policy_waivers(raw_waivers: Any, label: str) -> list[PolicyWaiver]:
+def normalize_waiver_requirements(
+    raw_requirements: Any,
+    label: str,
+    base_requirements: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    out = (
+        dict(base_requirements)
+        if isinstance(base_requirements, dict)
+        else dict(DEFAULT_WAIVER_REQUIREMENTS)
+    )
+    if raw_requirements is None:
+        return out
+    if not isinstance(raw_requirements, dict):
+        raise AbiFrameworkError(f"{label}.waiver_requirements must be an object when specified")
+    for key in [
+        "require_owner",
+        "require_reason",
+        "require_expires_utc",
+        "require_approved_by",
+        "require_ticket",
+    ]:
+        value = raw_requirements.get(key)
+        if value is not None:
+            if not isinstance(value, bool):
+                raise AbiFrameworkError(f"{label}.waiver_requirements.{key} must be boolean when specified")
+            out[key] = value
+    for key in ["max_ttl_days", "warn_expiring_within_days"]:
+        value = raw_requirements.get(key)
+        if value is not None:
+            if not isinstance(value, int) or value < 0:
+                raise AbiFrameworkError(f"{label}.waiver_requirements.{key} must be non-negative integer when specified")
+            out[key] = value
+    return out
+
+
+def normalize_policy_waivers(
+    raw_waivers: Any,
+    label: str,
+    waiver_requirements: dict[str, Any] | None = None,
+) -> list[PolicyWaiver]:
     if raw_waivers is None:
         return []
     if not isinstance(raw_waivers, list):
         raise AbiFrameworkError(f"{label}.waivers must be an array when specified")
+    requirements = normalize_waiver_requirements(waiver_requirements, label)
 
     out: list[PolicyWaiver] = []
     for idx, item in enumerate(raw_waivers):
@@ -3810,10 +3925,54 @@ def normalize_policy_waivers(raw_waivers: Any, label: str) -> list[PolicyWaiver]
                 ) from exc
             expires_utc = expires_utc_raw
 
+        created_utc_raw = item.get("created_utc")
+        created_utc = None
+        if created_utc_raw is not None:
+            if not isinstance(created_utc_raw, str) or not created_utc_raw:
+                raise AbiFrameworkError(f"{label}.waivers[{idx}].created_utc must be non-empty ISO string")
+            try:
+                _ = parse_utc_timestamp(created_utc_raw)
+            except Exception as exc:
+                raise AbiFrameworkError(
+                    f"{label}.waivers[{idx}].created_utc invalid ISO timestamp: {created_utc_raw}"
+                ) from exc
+            created_utc = created_utc_raw
+
         owner = item.get("owner")
         reason = item.get("reason")
+        approved_by = item.get("approved_by")
+        ticket = item.get("ticket")
         owner_value = str(owner) if isinstance(owner, str) and owner else None
         reason_value = str(reason) if isinstance(reason, str) and reason else None
+        approved_by_value = str(approved_by) if isinstance(approved_by, str) and approved_by else None
+        ticket_value = str(ticket) if isinstance(ticket, str) and ticket else None
+
+        if bool(requirements.get("require_owner")) and not owner_value:
+            raise AbiFrameworkError(f"{label}.waivers[{idx}].owner is required by waiver_requirements")
+        if bool(requirements.get("require_reason")) and not reason_value:
+            raise AbiFrameworkError(f"{label}.waivers[{idx}].reason is required by waiver_requirements")
+        if bool(requirements.get("require_expires_utc")) and not expires_utc:
+            raise AbiFrameworkError(f"{label}.waivers[{idx}].expires_utc is required by waiver_requirements")
+        if bool(requirements.get("require_approved_by")) and not approved_by_value:
+            raise AbiFrameworkError(f"{label}.waivers[{idx}].approved_by is required by waiver_requirements")
+        if bool(requirements.get("require_ticket")) and not ticket_value:
+            raise AbiFrameworkError(f"{label}.waivers[{idx}].ticket is required by waiver_requirements")
+
+        max_ttl_days = requirements.get("max_ttl_days")
+        if isinstance(max_ttl_days, int):
+            if not created_utc or not expires_utc:
+                raise AbiFrameworkError(
+                    f"{label}.waivers[{idx}] must include created_utc and expires_utc when max_ttl_days is configured"
+                )
+            created_at = parse_utc_timestamp(created_utc)
+            expires_at = parse_utc_timestamp(expires_utc)
+            ttl_days = (expires_at - created_at).total_seconds() / 86400.0
+            if ttl_days < 0:
+                raise AbiFrameworkError(f"{label}.waivers[{idx}] expires_utc is earlier than created_utc")
+            if ttl_days > float(max_ttl_days):
+                raise AbiFrameworkError(
+                    f"{label}.waivers[{idx}] TTL is {ttl_days:.2f} days and exceeds max_ttl_days={max_ttl_days}"
+                )
 
         out.append(
             PolicyWaiver(
@@ -3822,8 +3981,11 @@ def normalize_policy_waivers(raw_waivers: Any, label: str) -> list[PolicyWaiver]
                 severity=severity,
                 message_pattern=pattern,
                 expires_utc=expires_utc,
+                created_utc=created_utc,
                 owner=owner_value,
                 reason=reason_value,
+                approved_by=approved_by_value,
+                ticket=ticket_value,
             )
         )
 
@@ -4011,7 +4173,10 @@ def _apply_policy_waivers(
                         "waiver_id": waiver.waiver_id,
                         "severity": severity,
                         "message": message,
+                        "created_utc": waiver.created_utc,
                         "owner": waiver.owner,
+                        "approved_by": waiver.approved_by,
+                        "ticket": waiver.ticket,
                         "reason": waiver.reason,
                         "expires_utc": waiver.expires_utc,
                     }
@@ -4032,6 +4197,7 @@ def resolve_effective_policy(config: dict[str, Any], target_name: str) -> dict[s
         "max_allowed_classification": "breaking",
         "fail_on_warnings": False,
         "require_layout_probe": False,
+        "waiver_requirements": dict(DEFAULT_WAIVER_REQUIREMENTS),
         "rules": [],
         "waivers": [],
     }
@@ -4041,8 +4207,16 @@ def resolve_effective_policy(config: dict[str, Any], target_name: str) -> dict[s
         for key in ["max_allowed_classification", "fail_on_warnings", "require_layout_probe"]:
             if key in root_policy:
                 defaults[key] = root_policy[key]
+        defaults["waiver_requirements"] = normalize_waiver_requirements(
+            root_policy.get("waiver_requirements"),
+            "config.policy",
+        )
         defaults["rules"] = normalize_policy_rules(root_policy.get("rules"), "config.policy")
-        defaults["waivers"] = normalize_policy_waivers(root_policy.get("waivers"), "config.policy")
+        defaults["waivers"] = normalize_policy_waivers(
+            root_policy.get("waivers"),
+            "config.policy",
+            defaults["waiver_requirements"],
+        )
 
     target = resolve_target(config, target_name)
     target_policy = target.get("policy")
@@ -4050,8 +4224,18 @@ def resolve_effective_policy(config: dict[str, Any], target_name: str) -> dict[s
         for key in ["max_allowed_classification", "fail_on_warnings", "require_layout_probe"]:
             if key in target_policy:
                 defaults[key] = target_policy[key]
+        effective_requirements = normalize_waiver_requirements(
+            target_policy.get("waiver_requirements"),
+            f"target '{target_name}'.policy",
+            defaults.get("waiver_requirements"),
+        )
+        defaults["waiver_requirements"] = effective_requirements
         target_rules = normalize_policy_rules(target_policy.get("rules"), f"target '{target_name}'.policy")
-        target_waivers = normalize_policy_waivers(target_policy.get("waivers"), f"target '{target_name}'.policy")
+        target_waivers = normalize_policy_waivers(
+            target_policy.get("waivers"),
+            f"target '{target_name}'.policy",
+            defaults["waiver_requirements"],
+        )
     else:
         target_rules = []
         target_waivers = []
@@ -4065,6 +4249,7 @@ def resolve_effective_policy(config: dict[str, Any], target_name: str) -> dict[s
         "max_allowed_classification": max_allowed,
         "fail_on_warnings": bool(defaults.get("fail_on_warnings", False)),
         "require_layout_probe": bool(defaults.get("require_layout_probe", False)),
+        "waiver_requirements": defaults.get("waiver_requirements"),
         "rules": [*defaults.get("rules", []), *target_rules],
         "waivers": [*defaults.get("waivers", []), *target_waivers],
     }
@@ -4126,6 +4311,7 @@ def apply_policy_to_report(report: dict[str, Any], policy: dict[str, Any], targe
         "max_allowed_classification": policy.get("max_allowed_classification"),
         "fail_on_warnings": bool(policy.get("fail_on_warnings", False)),
         "require_layout_probe": bool(policy.get("require_layout_probe", False)),
+        "waiver_requirements": policy.get("waiver_requirements"),
         "rule_count": len(typed_rules),
         "waiver_count": len(typed_waivers),
     }
@@ -4448,6 +4634,138 @@ def command_benchmark(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_benchmark_gate(args: argparse.Namespace) -> int:
+    report_path = Path(args.report).resolve()
+    budget_path = Path(args.budget).resolve()
+    if not report_path.exists():
+        raise AbiFrameworkError(f"benchmark report file not found: {report_path}")
+    if not budget_path.exists():
+        raise AbiFrameworkError(f"benchmark budget file not found: {budget_path}")
+
+    report = load_json(report_path)
+    budget = load_json(budget_path)
+
+    report_targets = report.get("targets")
+    budget_targets = budget.get("targets")
+    if not isinstance(report_targets, dict):
+        raise AbiFrameworkError("benchmark report is missing object field 'targets'")
+    if not isinstance(budget_targets, dict):
+        raise AbiFrameworkError("benchmark budget is missing object field 'targets'")
+
+    violations: list[dict[str, Any]] = []
+    for target_name, target_budget in sorted(budget_targets.items()):
+        if not isinstance(target_budget, dict):
+            raise AbiFrameworkError(f"budget.targets.{target_name} must be an object")
+        target_report = report_targets.get(target_name)
+        if not isinstance(target_report, dict):
+            violations.append(
+                {
+                    "target": target_name,
+                    "metric": "*",
+                    "field": "*",
+                    "actual": None,
+                    "threshold": None,
+                    "message": "target is missing in benchmark report",
+                }
+            )
+            continue
+        for metric_name, metric_budget in sorted(target_budget.items()):
+            if not isinstance(metric_budget, dict):
+                raise AbiFrameworkError(f"budget.targets.{target_name}.{metric_name} must be an object")
+            metric_report = target_report.get(metric_name)
+            if not isinstance(metric_report, dict):
+                violations.append(
+                    {
+                        "target": target_name,
+                        "metric": metric_name,
+                        "field": "*",
+                        "actual": None,
+                        "threshold": None,
+                        "message": "metric missing in benchmark report",
+                    }
+                )
+                continue
+            for limit_field, threshold in sorted(metric_budget.items()):
+                if not isinstance(threshold, (int, float)):
+                    raise AbiFrameworkError(
+                        f"budget.targets.{target_name}.{metric_name}.{limit_field} must be numeric"
+                    )
+                if not limit_field.endswith("_max"):
+                    raise AbiFrameworkError(
+                        f"unsupported budget field '{limit_field}' for {target_name}.{metric_name}; expected '*_max'"
+                    )
+                metric_field = limit_field[: -len("_max")]
+                actual = metric_report.get(metric_field)
+                if not isinstance(actual, (int, float)):
+                    violations.append(
+                        {
+                            "target": target_name,
+                            "metric": metric_name,
+                            "field": metric_field,
+                            "actual": actual,
+                            "threshold": threshold,
+                            "message": "metric field missing or non-numeric",
+                        }
+                    )
+                    continue
+                if float(actual) > float(threshold):
+                    violations.append(
+                        {
+                            "target": target_name,
+                            "metric": metric_name,
+                            "field": metric_field,
+                            "actual": float(actual),
+                            "threshold": float(threshold),
+                            "message": "performance budget exceeded",
+                        }
+                    )
+
+    gate_report = {
+        "generated_at_utc": utc_timestamp_now(),
+        "report": str(report_path),
+        "budget": str(budget_path),
+        "violations": violations,
+        "status": "pass" if not violations else "fail",
+    }
+    if args.output:
+        write_json(Path(args.output).resolve(), gate_report)
+    if not violations:
+        print("benchmark-gate: pass")
+        return 0
+    print(f"benchmark-gate: fail ({len(violations)} violation(s))")
+    for item in violations:
+        print(
+            f"  [{item.get('target')}] {item.get('metric')}.{item.get('field')}: "
+            f"{item.get('actual')} > {item.get('threshold')} ({item.get('message')})"
+        )
+    return 1
+
+
+def command_config_migrate(args: argparse.Namespace) -> int:
+    input_path = Path(args.input).resolve()
+    if not input_path.exists():
+        raise AbiFrameworkError(f"Config input file not found: {input_path}")
+    output_path = Path(args.output).resolve() if args.output else input_path
+
+    payload = load_json(input_path)
+    migrated = migrate_config_payload_to_v2(payload)
+    validate_config_payload(migrated)
+
+    content = json.dumps(migrated, indent=2, sort_keys=True) + "\n"
+    if bool(args.check):
+        existing_payload = load_json(output_path) if output_path.exists() else None
+        if isinstance(existing_payload, dict) and migrate_config_payload_to_v2(existing_payload) == migrated:
+            print(f"config-migrate check: up to date ({output_path})")
+            return 0
+        print(f"config-migrate check: drift detected ({output_path})")
+        return 1
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(content, encoding="utf-8")
+    print(f"config-migrate: wrote schema v{CONFIG_SCHEMA_VERSION} config -> {output_path}")
+    return 0
+
+
 def command_idl_migrate(args: argparse.Namespace) -> int:
     input_path = Path(args.input).resolve()
     if not input_path.exists():
@@ -4660,10 +4978,123 @@ def command_sync(args: argparse.Namespace) -> int:
     return final_status
 
 
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def build_release_subjects(repo_root: Path, files: list[Path]) -> list[dict[str, Any]]:
+    subjects: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for file_path in files:
+        resolved = file_path.resolve()
+        if resolved in seen:
+            continue
+        if not resolved.exists() or not resolved.is_file():
+            continue
+        seen.add(resolved)
+        subjects.append(
+            {
+                "name": to_repo_relative(resolved, repo_root),
+                "digest": {"sha256": sha256_file(resolved)},
+                "size_bytes": resolved.stat().st_size,
+            }
+        )
+    return sorted(subjects, key=lambda item: str(item.get("name")))
+
+
+def write_cyclonedx_sbom(
+    *,
+    output_path: Path,
+    release_tag: str | None,
+    generated_at_utc: str,
+    subjects: list[dict[str, Any]],
+) -> None:
+    components: list[dict[str, Any]] = []
+    for subject in subjects:
+        name = subject.get("name")
+        digest = (subject.get("digest") or {}).get("sha256")
+        if not isinstance(name, str) or not isinstance(digest, str):
+            continue
+        components.append(
+            {
+                "type": "file",
+                "name": name,
+                "version": digest,
+                "hashes": [{"alg": "SHA-256", "content": digest}],
+            }
+        )
+
+    payload = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "serialNumber": f"urn:uuid:{uuid.uuid4()}",
+        "version": 1,
+        "metadata": {
+            "timestamp": generated_at_utc,
+            "tools": [{"vendor": "LumenRTC", "name": "abi_framework", "version": TOOL_VERSION}],
+            "component": {
+                "type": "application",
+                "name": "lumenrtc-abi-release",
+                "version": release_tag or "unversioned",
+            },
+        },
+        "components": components,
+    }
+    write_json(output_path, payload)
+
+
+def write_release_attestation(
+    *,
+    output_path: Path,
+    release_tag: str | None,
+    generated_at_utc: str,
+    subjects: list[dict[str, Any]],
+    parameters: dict[str, Any],
+) -> None:
+    payload = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": [
+            {
+                "name": item.get("name"),
+                "digest": item.get("digest"),
+            }
+            for item in subjects
+        ],
+        "predicateType": ATTESTATION_PREDICATE_TYPE,
+        "predicate": {
+            "buildDefinition": {
+                "buildType": ATTESTATION_BUILD_TYPE,
+                "externalParameters": {
+                    "release_tag": release_tag,
+                    **parameters,
+                },
+            },
+            "runDetails": {
+                "builder": {
+                    "id": "lumenrtc.dev/abi_framework",
+                    "version": TOOL_VERSION,
+                },
+                "metadata": {
+                    "invocationId": str(uuid.uuid4()),
+                    "finishedOn": generated_at_utc,
+                },
+            },
+        },
+    }
+    write_json(output_path, payload)
+
+
 def command_release_prepare(args: argparse.Namespace) -> int:
     repo_root = Path(args.repo_root).resolve()
     output_dir = Path(args.output_dir).resolve() if args.output_dir else (repo_root / "artifacts" / "abi" / "release")
     output_dir.mkdir(parents=True, exist_ok=True)
+    benchmark_budget = getattr(args, "benchmark_budget", None)
+    emit_sbom = bool(getattr(args, "emit_sbom", False))
+    emit_attestation = bool(getattr(args, "emit_attestation", False))
 
     doctor_args = argparse.Namespace(
         repo_root=str(repo_root),
@@ -4771,6 +5202,18 @@ def command_release_prepare(args: argparse.Namespace) -> int:
     if benchmark_exit != 0:
         return benchmark_exit
 
+    benchmark_gate_report_path = None
+    if benchmark_budget:
+        benchmark_gate_report_path = output_dir / "benchmark.gate.report.json"
+        benchmark_gate_args = argparse.Namespace(
+            report=str(benchmark_report_path),
+            budget=str(Path(benchmark_budget).resolve()),
+            output=str(benchmark_gate_report_path),
+        )
+        benchmark_gate_exit = command_benchmark_gate(benchmark_gate_args)
+        if benchmark_gate_exit != 0:
+            return benchmark_gate_exit
+
     verify_aggregate = load_json(verify_output_dir / "aggregate.report.json")
     sync_aggregate = load_json(output_dir / "sync.aggregate.report.json")
     codegen_aggregate = load_json(codegen_report_path)
@@ -4803,16 +5246,75 @@ def command_release_prepare(args: argparse.Namespace) -> int:
             "verify_sarif": to_repo_relative(output_dir / "verify.aggregate.report.sarif.json", repo_root),
             "changelog_report": to_repo_relative(output_dir / "changelog.aggregate.report.json", repo_root),
             "changelog_sarif": to_repo_relative(output_dir / "changelog.aggregate.report.sarif.json", repo_root),
+            "benchmark_gate_report": (
+                to_repo_relative(benchmark_gate_report_path, repo_root)
+                if isinstance(benchmark_gate_report_path, Path)
+                else None
+            ),
         },
         "options": {
             "update_baselines": bool(args.update_baselines),
             "check_generated": bool(args.check_generated),
             "skip_binary": bool(args.skip_binary),
             "fail_on_warnings": bool(args.fail_on_warnings),
+            "benchmark_budget": benchmark_budget,
+            "emit_sbom": emit_sbom,
+            "emit_attestation": emit_attestation,
         },
         "status": "pass",
     }
-    write_json(output_dir / "release.prepare.report.json", manifest)
+
+    sbom_path = output_dir / "release.sbom.cdx.json"
+    attestation_path = output_dir / "release.attestation.json"
+    if emit_sbom:
+        manifest["artifacts"]["sbom"] = to_repo_relative(sbom_path, repo_root)
+    if emit_attestation:
+        manifest["artifacts"]["attestation"] = to_repo_relative(attestation_path, repo_root)
+
+    manifest_path = output_dir / "release.prepare.report.json"
+    write_json(manifest_path, manifest)
+
+    subject_paths = [
+        changelog_output,
+        output_dir / "sync.aggregate.report.json",
+        codegen_report_path,
+        benchmark_report_path,
+        html_output_path,
+        output_dir / "verify.aggregate.report.sarif.json",
+        output_dir / "changelog.aggregate.report.json",
+        output_dir / "changelog.aggregate.report.sarif.json",
+        verify_output_dir / "aggregate.report.json",
+        manifest_path,
+    ]
+    if isinstance(benchmark_gate_report_path, Path):
+        subject_paths.append(benchmark_gate_report_path)
+
+    if emit_sbom:
+        sbom_subjects = build_release_subjects(repo_root, subject_paths)
+        write_cyclonedx_sbom(
+            output_path=sbom_path,
+            release_tag=args.release_tag,
+            generated_at_utc=utc_timestamp_now(),
+            subjects=sbom_subjects,
+        )
+        subject_paths.append(sbom_path)
+
+    if emit_attestation:
+        attestation_subjects = build_release_subjects(repo_root, subject_paths)
+        write_release_attestation(
+            output_path=attestation_path,
+            release_tag=args.release_tag,
+            generated_at_utc=utc_timestamp_now(),
+            subjects=attestation_subjects,
+            parameters={
+                "config": to_repo_relative(Path(args.config).resolve(), repo_root),
+                "skip_binary": bool(args.skip_binary),
+                "update_baselines": bool(args.update_baselines),
+                "check_generated": bool(args.check_generated),
+                "fail_on_warnings": bool(args.fail_on_warnings),
+            },
+        )
+
     print(f"release-prepare completed: {output_dir}")
     return 0
 
@@ -5105,6 +5607,131 @@ def command_regen_baselines(args: argparse.Namespace) -> int:
     return 0
 
 
+def build_waiver_audit_for_target(target_name: str, effective_policy: dict[str, Any]) -> dict[str, Any]:
+    now = now_utc()
+    requirements = normalize_waiver_requirements(
+        effective_policy.get("waiver_requirements"),
+        f"effective policy '{target_name}'",
+    )
+    warn_days_raw = requirements.get("warn_expiring_within_days")
+    warn_days = int(warn_days_raw) if isinstance(warn_days_raw, int) else 30
+
+    waivers_raw = effective_policy.get("waivers")
+    waivers = [item for item in waivers_raw if isinstance(item, PolicyWaiver)] if isinstance(waivers_raw, list) else []
+    entries: list[dict[str, Any]] = []
+    for waiver in waivers:
+        if not any(pattern.search(target_name) for pattern in waiver.target_patterns):
+            continue
+
+        missing_metadata: list[str] = []
+        if bool(requirements.get("require_owner")) and not waiver.owner:
+            missing_metadata.append("owner")
+        if bool(requirements.get("require_reason")) and not waiver.reason:
+            missing_metadata.append("reason")
+        if bool(requirements.get("require_expires_utc")) and not waiver.expires_utc:
+            missing_metadata.append("expires_utc")
+        if bool(requirements.get("require_approved_by")) and not waiver.approved_by:
+            missing_metadata.append("approved_by")
+        if bool(requirements.get("require_ticket")) and not waiver.ticket:
+            missing_metadata.append("ticket")
+
+        status = "active"
+        expires_in_days = None
+        expired = False
+        expiring_soon = False
+        if waiver.expires_utc:
+            expires_at = parse_utc_timestamp(waiver.expires_utc)
+            expires_in_days = round((expires_at - now).total_seconds() / 86400.0, 3)
+            if expires_at < now:
+                status = "expired"
+                expired = True
+            elif expires_in_days <= float(warn_days):
+                expiring_soon = True
+
+        if missing_metadata:
+            status = "invalid_metadata"
+
+        entries.append(
+            {
+                "waiver_id": waiver.waiver_id,
+                "severity": waiver.severity,
+                "status": status,
+                "expired": expired,
+                "expiring_soon": expiring_soon,
+                "expires_in_days": expires_in_days,
+                "created_utc": waiver.created_utc,
+                "expires_utc": waiver.expires_utc,
+                "owner": waiver.owner,
+                "approved_by": waiver.approved_by,
+                "ticket": waiver.ticket,
+                "reason": waiver.reason,
+                "missing_metadata": missing_metadata,
+                "pattern": waiver.message_pattern.pattern,
+            }
+        )
+
+    return {
+        "target": target_name,
+        "waiver_requirements": requirements,
+        "waiver_count": len(entries),
+        "expired_count": sum(1 for item in entries if bool(item.get("expired"))),
+        "expiring_soon_count": sum(1 for item in entries if bool(item.get("expiring_soon"))),
+        "invalid_metadata_count": sum(1 for item in entries if bool(item.get("missing_metadata"))),
+        "entries": entries,
+    }
+
+
+def command_waiver_audit(args: argparse.Namespace) -> int:
+    config = load_config(Path(args.config).resolve())
+    target_names = resolve_target_names(config=config, target_name=args.target)
+
+    results: dict[str, dict[str, Any]] = {}
+    expired_total = 0
+    invalid_total = 0
+    expiring_soon_total = 0
+    for target_name in target_names:
+        effective_policy = resolve_effective_policy(config=config, target_name=target_name)
+        audit = build_waiver_audit_for_target(target_name, effective_policy)
+        results[target_name] = audit
+        expired_total += int(audit.get("expired_count") or 0)
+        invalid_total += int(audit.get("invalid_metadata_count") or 0)
+        expiring_soon_total += int(audit.get("expiring_soon_count") or 0)
+
+    aggregate = {
+        "generated_at_utc": utc_timestamp_now(),
+        "results": results,
+        "summary": {
+            "target_count": len(target_names),
+            "waiver_count": sum(int(item.get("waiver_count") or 0) for item in results.values()),
+            "expired_count": expired_total,
+            "expiring_soon_count": expiring_soon_total,
+            "invalid_metadata_count": invalid_total,
+        },
+    }
+
+    for target_name in sorted(results.keys()):
+        item = results[target_name]
+        print(
+            f"[{target_name}] waivers={item.get('waiver_count', 0)} "
+            f"expired={item.get('expired_count', 0)} "
+            f"expiring_soon={item.get('expiring_soon_count', 0)} "
+            f"invalid_metadata={item.get('invalid_metadata_count', 0)}"
+        )
+
+    if args.output:
+        write_json(Path(args.output).resolve(), aggregate)
+    elif bool(args.print_json):
+        print(json.dumps(aggregate, indent=2, sort_keys=True))
+
+    if bool(args.fail_on_expired) and expired_total > 0:
+        return 1
+    if bool(args.fail_on_missing_metadata) and invalid_total > 0:
+        return 1
+    if bool(args.fail_on_expiring_soon) and expiring_soon_total > 0:
+        return 1
+    return 0
+
+
 def command_doctor(args: argparse.Namespace) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_config(Path(args.config).resolve())
@@ -5191,22 +5818,16 @@ def command_doctor(args: argparse.Namespace) -> int:
 
         try:
             effective_policy = resolve_effective_policy(config=config, target_name=target_name)
-            waivers = effective_policy.get("waivers")
-            if isinstance(waivers, list):
-                expired_count = 0
-                for waiver in waivers:
-                    if not isinstance(waiver, PolicyWaiver):
-                        continue
-                    if waiver.expires_utc:
-                        try:
-                            if parse_utc_timestamp(waiver.expires_utc) < now_utc():
-                                expired_count += 1
-                        except Exception:
-                            issues.append(
-                                ("warning", target_name, f"waiver '{waiver.waiver_id}' has invalid expires_utc")
-                            )
-                if expired_count > 0:
-                    issues.append(("warning", target_name, f"expired waivers detected: {expired_count}"))
+            waiver_audit = build_waiver_audit_for_target(target_name, effective_policy)
+            expired_count = int(waiver_audit.get("expired_count") or 0)
+            invalid_count = int(waiver_audit.get("invalid_metadata_count") or 0)
+            expiring_soon_count = int(waiver_audit.get("expiring_soon_count") or 0)
+            if expired_count > 0:
+                issues.append(("warning", target_name, f"expired waivers detected: {expired_count}"))
+            if invalid_count > 0:
+                issues.append(("error", target_name, f"waivers with missing required metadata: {invalid_count}"))
+            if expiring_soon_count > 0:
+                issues.append(("warning", target_name, f"waivers expiring soon: {expiring_soon_count}"))
         except AbiFrameworkError as exc:
             issues.append(("error", target_name, f"policy config invalid: {exc}"))
 
@@ -5334,7 +5955,14 @@ def command_init_target(args: argparse.Namespace) -> int:
     if config_path.exists():
         config = load_config(config_path)
     else:
-        config = {"targets": {}}
+        config = {
+            "schema_version": CONFIG_SCHEMA_VERSION,
+            "schema_uri": CONFIG_SCHEMA_URI_V2,
+            "policy": {
+                "waiver_requirements": dict(DEFAULT_WAIVER_REQUIREMENTS),
+            },
+            "targets": {},
+        }
 
     targets = config.get("targets")
     if not isinstance(targets, dict):
@@ -5395,6 +6023,13 @@ def command_init_target(args: argparse.Namespace) -> int:
         }
 
     targets[args.target] = target_entry
+    config["schema_version"] = CONFIG_SCHEMA_VERSION
+    config["schema_uri"] = CONFIG_SCHEMA_URI_V2
+    if not isinstance(config.get("policy"), dict):
+        config["policy"] = {}
+    root_policy = config["policy"]
+    if not isinstance(root_policy.get("waiver_requirements"), dict):
+        root_policy["waiver_requirements"] = dict(DEFAULT_WAIVER_REQUIREMENTS)
     config["targets"] = targets
     write_json(config_path, config)
 
@@ -5498,6 +6133,16 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--fail-on-warnings", action="store_true", help="Treat warnings as failures.")
     doctor.set_defaults(func=command_doctor)
 
+    waiver_audit = sub.add_parser("waiver-audit", help="Audit waiver metadata, expiry, and policy compliance.")
+    waiver_audit.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    waiver_audit.add_argument("--target", help="Optional target name. If omitted, all targets are audited.")
+    waiver_audit.add_argument("--output", help="Write waiver audit report JSON to path.")
+    waiver_audit.add_argument("--print-json", action="store_true", help="Print aggregate waiver audit JSON.")
+    waiver_audit.add_argument("--fail-on-expired", action="store_true", help="Fail when expired waivers are present.")
+    waiver_audit.add_argument("--fail-on-missing-metadata", action="store_true", help="Fail when waiver metadata requirements are not met.")
+    waiver_audit.add_argument("--fail-on-expiring-soon", action="store_true", help="Fail when waivers are close to expiration.")
+    waiver_audit.set_defaults(func=command_waiver_audit)
+
     changelog = sub.add_parser("changelog", help="Generate markdown ABI changelog from baseline vs current.")
     changelog.add_argument(
         "--repo-root",
@@ -5596,6 +6241,9 @@ def build_parser() -> argparse.ArgumentParser:
     release_prepare.add_argument("--title", default="ABI Changelog", help="Changelog title.")
     release_prepare.add_argument("--changelog-output", help="Path for markdown changelog output.")
     release_prepare.add_argument("--output-dir", help="Directory for release preparation artifacts.")
+    release_prepare.add_argument("--benchmark-budget", help="Optional performance budget JSON for benchmark gate.")
+    release_prepare.add_argument("--emit-sbom", action="store_true", help="Emit CycloneDX SBOM for release artifacts.")
+    release_prepare.add_argument("--emit-attestation", action="store_true", help="Emit in-toto/SLSA-style provenance attestation.")
     release_prepare.set_defaults(func=command_release_prepare)
 
     diff = sub.add_parser("diff", help="Compare two snapshot files.")
@@ -5615,6 +6263,12 @@ def build_parser() -> argparse.ArgumentParser:
     idl_migrate.add_argument("--check", action="store_true", help="Fail if migrated output differs from file on disk.")
     idl_migrate.set_defaults(func=command_idl_migrate)
 
+    config_migrate = sub.add_parser("config-migrate", help="Migrate ABI config payload to current schema version.")
+    config_migrate.add_argument("--input", required=True, help="Input config JSON path.")
+    config_migrate.add_argument("--output", help="Output config JSON path. Defaults to --input.")
+    config_migrate.add_argument("--check", action="store_true", help="Fail if migrated output differs from file on disk.")
+    config_migrate.set_defaults(func=command_config_migrate)
+
     benchmark = sub.add_parser("benchmark", help="Benchmark ABI pipeline timings.")
     benchmark.add_argument(
         "--repo-root",
@@ -5629,6 +6283,12 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--iterations", default=3, type=int, help="Iterations per target (default: 3).")
     benchmark.add_argument("--output", help="Write benchmark report JSON to path.")
     benchmark.set_defaults(func=command_benchmark)
+
+    benchmark_gate = sub.add_parser("benchmark-gate", help="Enforce benchmark report against performance budgets.")
+    benchmark_gate.add_argument("--report", required=True, help="Benchmark report JSON path (from benchmark command).")
+    benchmark_gate.add_argument("--budget", required=True, help="Budget JSON path.")
+    benchmark_gate.add_argument("--output", help="Write gate report JSON path.")
+    benchmark_gate.set_defaults(func=command_benchmark_gate)
 
     list_targets = sub.add_parser("list-targets", help="List target names from config.")
     list_targets.add_argument("--config", required=True, help="Path to ABI config JSON.")

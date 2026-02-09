@@ -1,11 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lumenrtc.dev/abi_framework/config.schema.json",
+  "$id": "https://lumenrtc.dev/abi_framework/config.schema.v2.json",
   "title": "abi_framework config",
   "type": "object",
   "required": ["targets"],
   "additionalProperties": true,
   "properties": {
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "schema_uri": { "type": "string", "minLength": 1 },
+    "metadata": { "type": "object", "additionalProperties": true },
     "policy": {
       "type": "object",
       "additionalProperties": true,
@@ -23,6 +26,19 @@
         "waivers": {
           "type": "array",
           "items": { "type": "object" }
+        },
+        "waiver_requirements": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "require_owner": { "type": "boolean" },
+            "require_reason": { "type": "boolean" },
+            "require_expires_utc": { "type": "boolean" },
+            "require_approved_by": { "type": "boolean" },
+            "require_ticket": { "type": "boolean" },
+            "max_ttl_days": { "type": ["integer", "null"], "minimum": 0 },
+            "warn_expiring_within_days": { "type": "integer", "minimum": 0 }
+          }
         }
       }
     },
@@ -52,6 +68,19 @@
               "waivers": {
                 "type": "array",
                 "items": { "type": "object" }
+              },
+              "waiver_requirements": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "require_owner": { "type": "boolean" },
+                  "require_reason": { "type": "boolean" },
+                  "require_expires_utc": { "type": "boolean" },
+                  "require_approved_by": { "type": "boolean" },
+                  "require_ticket": { "type": "boolean" },
+                  "max_ttl_days": { "type": ["integer", "null"], "minimum": 0 },
+                  "warn_expiring_within_days": { "type": "integer", "minimum": 0 }
+                }
               }
             }
           },
