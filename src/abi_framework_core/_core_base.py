@@ -340,6 +340,17 @@ def validate_config_payload(payload: dict[str, Any]) -> None:
                         raise AbiFrameworkError(
                             f"target '{target_name}'.bindings.deprecated_symbols[{idx}] must be non-empty string"
                         )
+            interop_metadata_path = bindings.get("interop_metadata_path")
+            if interop_metadata_path is not None:
+                if not isinstance(interop_metadata_path, str) or not interop_metadata_path:
+                    raise AbiFrameworkError(
+                        f"target '{target_name}'.bindings.interop_metadata_path must be a non-empty string"
+                    )
+            interop_metadata = bindings.get("interop_metadata")
+            if interop_metadata is not None and not isinstance(interop_metadata, dict):
+                raise AbiFrameworkError(
+                    f"target '{target_name}'.bindings.interop_metadata must be an object when specified"
+                )
             generators = bindings.get("generators")
             if generators is not None:
                 if not isinstance(generators, list):
@@ -1236,4 +1247,3 @@ def parse_c_header(
         "constants": constants,
     }
     return header_payload, AbiVersion(major=major, minor=minor, patch=patch), parser_info
-

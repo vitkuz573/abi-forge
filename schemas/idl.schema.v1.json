@@ -88,6 +88,45 @@
           "stable_id": { "type": "string", "minLength": 1 }
         }
       }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "interop": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "string_encoding": { "type": "string", "minLength": 1 },
+            "opaque_types": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "release": { "type": "string", "minLength": 1 },
+                  "retain": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "functions": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "return": { "type": "object", "additionalProperties": true },
+                  "result": { "type": "object", "additionalProperties": true },
+                  "parameters": {
+                    "type": "object",
+                    "additionalProperties": { "type": "object", "additionalProperties": true }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

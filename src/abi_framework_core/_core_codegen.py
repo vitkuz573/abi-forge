@@ -233,6 +233,56 @@ def resolve_codegen_config(target: dict[str, Any], target_name: str, repo_root: 
     }
 
 
+def _merge_nested_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge_nested_dicts(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def resolve_interop_metadata(target: dict[str, Any], target_name: str, repo_root: Path) -> dict[str, Any]:
+    bindings_cfg = target.get("bindings")
+    if not isinstance(bindings_cfg, dict):
+        return {}
+
+    metadata: dict[str, Any] = {}
+
+    metadata_path_value = bindings_cfg.get("interop_metadata_path")
+    if isinstance(metadata_path_value, str) and metadata_path_value:
+        metadata_path = ensure_relative_path(repo_root, metadata_path_value).resolve()
+        try:
+            text = metadata_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise AbiFrameworkError(
+                f"Unable to read interop metadata '{metadata_path}': {exc}"
+            ) from exc
+        try:
+            loaded = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise AbiFrameworkError(
+                f"Interop metadata '{metadata_path}' is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise AbiFrameworkError(
+                f"Interop metadata '{metadata_path}' must be a JSON object"
+            )
+        metadata = loaded
+
+    inline = bindings_cfg.get("interop_metadata")
+    if isinstance(inline, dict) and inline:
+        metadata = _merge_nested_dicts(metadata, inline)
+
+    if metadata and not isinstance(metadata, dict):
+        raise AbiFrameworkError(
+            f"target '{target_name}'.bindings.interop_metadata must resolve to an object"
+        )
+
+    return metadata
+
+
 def include_symbol_for_codegen(symbol: str, config: dict[str, Any]) -> bool:
     include_symbols = config.get("include_symbols", set())
     if isinstance(include_symbols, set) and include_symbols:
@@ -333,6 +383,7 @@ def build_idl_payload(
     target_name: str,
     snapshot: dict[str, Any],
     codegen_cfg: dict[str, Any],
+    interop_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     records = build_function_idl_records(target_name=target_name, snapshot=snapshot, codegen_cfg=codegen_cfg)
     header = snapshot.get("header")
@@ -395,6 +446,10 @@ def build_idl_payload(
             "exclude_symbols": sorted(codegen_cfg.get("exclude_symbols", [])),
         },
     }
+    if interop_metadata:
+        payload["bindings"] = {
+            "interop": interop_metadata,
+        }
     return payload
 
 
@@ -805,13 +860,16 @@ def run_generator_entry(
             "{repo_root}": str(repo_root),
             "{target}": target_name,
             "{idl}": str(idl_path),
+            "{check}": "--check" if check else "",
+            "{dry_run}": "--dry-run" if dry_run else "",
         }
         rendered: list[str] = []
         for token in command_template:
             current = token
             for key, value in replacements.items():
                 current = current.replace(key, value)
-            rendered.append(current)
+            if current:
+                rendered.append(current)
         proc = subprocess.run(rendered, capture_output=True, text=True)
         status = "pass" if proc.returncode == 0 else "fail"
         return {
@@ -1104,4 +1162,3 @@ def probe_struct_layouts(
             "errors": [],
             "compile_stdout": compile_proc.stdout.strip(),
         }
-
