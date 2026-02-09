@@ -8,8 +8,9 @@
   CLI entrypoint.
 - `tools/abi_framework/src/abi_framework_core/core.py`  
   ABI engine primitives (parse, diff, policy, idl/codegen building blocks).
-- `tools/abi_framework/src/abi_framework_core/commands.py`  
-  Command orchestration (`generate`, `verify-all`, `sync`, `release-prepare`, etc.).
+- `tools/abi_framework/src/abi_framework_core/commands/`  
+  Command orchestration split by domain:
+  `generation.py`, `verification.py`, `governance.py`, `performance.py`, `release.py`, `targets.py`.
 - `tools/abi_framework/src/abi_framework_core/cli.py`  
   CLI argument routing and exit-code behavior.
 - `tools/abi_framework/ARCHITECTURE.md`  
