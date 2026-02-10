@@ -79,8 +79,9 @@ internal static class AbiInteropSourceEmitter
             var enumNames = ParseHeaderTypeNames(root, "enums");
             var structNames = ParseHeaderTypeNames(root, "structs");
             var functions = ParseFunctions(root);
+            var parameterOverrides = ParseFunctionParameterOverrides(root, functions);
 
-            return new IdlModel(functions, enumNames, structNames, abiVersion);
+            return new IdlModel(functions, enumNames, structNames, abiVersion, parameterOverrides);
         }
     }
 
@@ -209,6 +210,112 @@ internal static class AbiInteropSourceEmitter
         return functions;
     }
 
+    private static Dictionary<string, FunctionParameterOverrideSpec> ParseFunctionParameterOverrides(
+        JsonElement root,
+        IReadOnlyList<FunctionSpec> functions)
+    {
+        var result = new Dictionary<string, FunctionParameterOverrideSpec>(StringComparer.Ordinal);
+
+        if (!TryGetInteropFunctionsObject(root, out var interopFunctions))
+        {
+            return result;
+        }
+
+        var knownFunctions = functions.ToDictionary(
+            static item => item.Name,
+            StringComparer.Ordinal);
+
+        foreach (var functionProperty in interopFunctions.EnumerateObject())
+        {
+            if (!knownFunctions.TryGetValue(functionProperty.Name, out var functionSpec))
+            {
+                throw new GeneratorException(
+                    $"bindings.interop.functions.{functionProperty.Name} references unknown ABI function.");
+            }
+
+            if (functionProperty.Value.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if (!functionProperty.Value.TryGetProperty("parameters", out var parametersObj) ||
+                parametersObj.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var knownParameterNames = new HashSet<string>(
+                functionSpec.Parameters.Select(static parameter => parameter.Name),
+                StringComparer.Ordinal);
+
+            foreach (var parameterProperty in parametersObj.EnumerateObject())
+            {
+                var parameterContext =
+                    $"bindings.interop.functions.{functionProperty.Name}.parameters.{parameterProperty.Name}";
+                if (!knownParameterNames.Contains(parameterProperty.Name))
+                {
+                    throw new GeneratorException($"{parameterContext} references unknown ABI parameter.");
+                }
+
+                if (parameterProperty.Value.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var managedType = GetOptionalString(parameterProperty.Value, "managed_type", string.Empty);
+                var modifierRaw = GetOptionalString(parameterProperty.Value, "modifier", string.Empty);
+                var modifier = NormalizeParameterModifier(modifierRaw, parameterContext);
+
+                var marshalAsI1 = ReadOptionalNullableBool(parameterProperty.Value, "marshal_as_i1");
+                var marshalAs = GetOptionalString(parameterProperty.Value, "marshal_as", string.Empty);
+                if (!string.IsNullOrWhiteSpace(marshalAs))
+                {
+                    if (!string.Equals(marshalAs.Trim(), "i1", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new GeneratorException(
+                            $"{parameterContext}.marshal_as must be 'i1' when specified.");
+                    }
+
+                    marshalAsI1 = true;
+                }
+
+                if (string.IsNullOrWhiteSpace(managedType) &&
+                    string.IsNullOrWhiteSpace(modifier) &&
+                    !marshalAsI1.HasValue)
+                {
+                    continue;
+                }
+
+                var key = BuildFunctionParameterOverrideKey(functionProperty.Name, parameterProperty.Name);
+                result[key] = new FunctionParameterOverrideSpec(managedType, modifier, marshalAsI1);
+            }
+        }
+
+        return result;
+    }
+
+    private static bool TryGetInteropFunctionsObject(JsonElement root, out JsonElement interopFunctions)
+    {
+        interopFunctions = default;
+
+        if (!root.TryGetProperty("bindings", out var bindingsObj) || bindingsObj.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!bindingsObj.TryGetProperty("interop", out var interopObj) || interopObj.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!interopObj.TryGetProperty("functions", out interopFunctions) || interopFunctions.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private static string GetRequiredString(JsonElement obj, string key)
     {
         if (obj.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String)
@@ -245,6 +352,53 @@ internal static class AbiInteropSourceEmitter
         }
 
         return fallback;
+    }
+
+    private static bool? ReadOptionalNullableBool(JsonElement obj, string key)
+    {
+        if (!obj.TryGetProperty(key, out var value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.True)
+        {
+            return true;
+        }
+
+        if (value.ValueKind == JsonValueKind.False)
+        {
+            return false;
+        }
+
+        return null;
+    }
+
+    private static string NormalizeParameterModifier(string value, string context)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var normalized = value.Trim().ToLowerInvariant();
+        if (normalized == "none" || normalized == "null" || normalized == "default")
+        {
+            return string.Empty;
+        }
+
+        if (normalized == "ref" || normalized == "out" || normalized == "in")
+        {
+            return normalized;
+        }
+
+        throw new GeneratorException(
+            $"{context}.modifier must be one of: ref, out, in, none.");
+    }
+
+    private static string BuildFunctionParameterOverrideKey(string functionName, string parameterName)
+    {
+        return functionName + "::" + parameterName;
     }
 
     private static MethodDeclarationSyntax BuildMethod(
@@ -453,6 +607,12 @@ internal static class AbiInteropSourceEmitter
         ParameterSpec parameter,
         IdlModel model)
     {
+        var baseline = MapManagedParameterCore(parameter, model);
+        return ApplyParameterOverride(function, parameter, model, baseline);
+    }
+
+    private static ParameterRenderSpec MapManagedParameterCore(ParameterSpec parameter, IdlModel model)
+    {
         if (parameter.Variadic)
         {
             return new ParameterRenderSpec("IntPtr", modifier: null, marshalAsI1: false);
@@ -462,10 +622,6 @@ internal static class AbiInteropSourceEmitter
         if (info.PointerDepth == 0)
         {
             var scalarType = MapManagedBaseType(info.BaseType, model);
-            if (IsDirectionEnumParameter(function, parameter, scalarType))
-            {
-                scalarType = "LrtcRtpTransceiverDirection";
-            }
 
             return new ParameterRenderSpec(
                 scalarType,
@@ -479,96 +635,41 @@ internal static class AbiInteropSourceEmitter
             return new ParameterRenderSpec("IntPtr", modifier: null, marshalAsI1: false);
         }
 
-        if (IsRawPointerType(info.BaseType, parameter.Name))
-        {
-            return new ParameterRenderSpec("IntPtr", modifier: null, marshalAsI1: false);
-        }
-
         if (model.StructNames.Contains(info.BaseType))
         {
             var structType = MapManagedBaseType(info.BaseType, model);
-            var modifier = IsOutStructPointer(parameter) ? "out" : "ref";
-            return new ParameterRenderSpec(structType, modifier, marshalAsI1: false);
-        }
-
-        if (PrimitiveTypeMap.TryGetValue(info.BaseType, out var primitive))
-        {
-            if (IsOutPrimitivePointer(parameter))
-            {
-                return new ParameterRenderSpec(
-                    primitive,
-                    modifier: "out",
-                    marshalAsI1: string.Equals(primitive, "bool", StringComparison.Ordinal)
-                );
-            }
+            return new ParameterRenderSpec(structType, modifier: "ref", marshalAsI1: false);
         }
 
         return new ParameterRenderSpec("IntPtr", modifier: null, marshalAsI1: false);
     }
 
-    private static bool IsDirectionEnumParameter(
+    private static ParameterRenderSpec ApplyParameterOverride(
         FunctionSpec function,
         ParameterSpec parameter,
-        string managedType)
+        IdlModel model,
+        ParameterRenderSpec baseline)
     {
-        if (!string.Equals(managedType, "int", StringComparison.Ordinal))
+        var key = BuildFunctionParameterOverrideKey(function.Name, parameter.Name);
+        if (!model.FunctionParameterOverrides.TryGetValue(key, out var overrideSpec))
         {
-            return false;
+            return baseline;
         }
 
-        return string.Equals(function.Name, "lrtc_rtp_transceiver_set_direction", StringComparison.Ordinal)
-            && string.Equals(parameter.Name, "direction", StringComparison.Ordinal);
-    }
+        var hasManagedTypeOverride = !string.IsNullOrWhiteSpace(overrideSpec.ManagedType);
+        var typeName = string.IsNullOrWhiteSpace(overrideSpec.ManagedType)
+            ? baseline.TypeName
+            : overrideSpec.ManagedType!;
+        var modifier = string.IsNullOrWhiteSpace(overrideSpec.Modifier)
+            ? (hasManagedTypeOverride ? null : baseline.Modifier)
+            : overrideSpec.Modifier;
 
-    private static bool IsOutPrimitivePointer(ParameterSpec parameter)
-    {
-        var paramName = parameter.Name.ToLowerInvariant();
-        return paramName == "volume" || paramName == "value";
-    }
+        var marshalAsI1 = overrideSpec.MarshalAsI1
+            ?? (string.IsNullOrWhiteSpace(overrideSpec.ManagedType)
+                ? baseline.MarshalAsI1
+                : string.Equals(typeName, "bool", StringComparison.Ordinal));
 
-    private static bool IsOutStructPointer(ParameterSpec parameter)
-    {
-        var paramName = parameter.Name.ToLowerInvariant();
-        return paramName == "info";
-    }
-
-    private static bool IsRawPointerType(string baseType, string parameterName)
-    {
-        var normalizedBase = baseType.ToLowerInvariant();
-        if (normalizedBase == "void"
-            || normalizedBase == "char"
-            || normalizedBase == "signed char"
-            || normalizedBase == "unsigned char"
-            || normalizedBase == "uint8_t"
-            || normalizedBase == "int8_t")
-        {
-            return true;
-        }
-
-        var normalizedName = parameterName.ToLowerInvariant();
-        if (ContainsOrdinal(normalizedName, "buffer")
-            || ContainsOrdinal(normalizedName, "name")
-            || ContainsOrdinal(normalizedName, "guid")
-            || ContainsOrdinal(normalizedName, "sdp")
-            || ContainsOrdinal(normalizedName, "candidate")
-            || ContainsOrdinal(normalizedName, "mime")
-            || ContainsOrdinal(normalizedName, "stream_ids")
-            || ContainsOrdinal(normalizedName, "data")
-            || ContainsOrdinal(normalizedName, "label")
-            || ContainsOrdinal(normalizedName, "protocol")
-            || string.Equals(normalizedName, "config", StringComparison.Ordinal)
-            || ContainsOrdinal(normalizedName, "error")
-            || ContainsOrdinal(normalizedName, "tones"))
-        {
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool ContainsOrdinal(string value, string pattern)
-    {
-        return value.IndexOf(pattern, StringComparison.Ordinal) >= 0;
+        return new ParameterRenderSpec(typeName, modifier, marshalAsI1);
     }
 
     private static CTypeInfo ParseCTypeInfo(string cType)
@@ -602,11 +703,6 @@ internal static class AbiInteropSourceEmitter
         if (PrimitiveTypeMap.TryGetValue(stripped, out var primitive))
         {
             return primitive;
-        }
-
-        if (string.Equals(stripped, "lrtc_stats_failure_cb", StringComparison.Ordinal))
-        {
-            return "LrtcStatsFailureCb";
         }
 
         if (model.EnumNames.Contains(stripped) || model.StructNames.Contains(stripped))
@@ -689,6 +785,7 @@ internal sealed class GeneratorOptions
     private const string DefaultIdlPath = "abi/generated/abi.idl.json";
     private const string DefaultNamespace = "Abi.Interop";
     private const string DefaultClassName = "NativeMethods";
+    private const string DefaultConstantsClassName = "AbiConstants";
     private const string DefaultAccessModifier = "internal";
     private const string DefaultCallingConvention = "Cdecl";
     private const string DefaultLibraryExpression = "LibName";
@@ -701,6 +798,7 @@ internal sealed class GeneratorOptions
         string managedApiMetadataPath,
         string namespaceName,
         string className,
+        string constantsClassName,
         string accessModifier,
         string callingConvention,
         string libraryExpression)
@@ -710,6 +808,7 @@ internal sealed class GeneratorOptions
         ManagedApiMetadataPath = managedApiMetadataPath;
         NamespaceName = namespaceName;
         ClassName = className;
+        ConstantsClassName = constantsClassName;
         AccessModifier = accessModifier;
         CallingConvention = callingConvention;
         LibraryExpression = libraryExpression;
@@ -724,6 +823,8 @@ internal sealed class GeneratorOptions
     public string NamespaceName { get; }
 
     public string ClassName { get; }
+
+    public string ConstantsClassName { get; }
 
     public string AccessModifier { get; }
 
@@ -754,6 +855,10 @@ internal sealed class GeneratorOptions
                 options,
                 DefaultClassName,
                 "AbiClassName"),
+            constantsClassName: ReadBuildProperty(
+                options,
+                DefaultConstantsClassName,
+                "AbiConstantsClassName"),
             accessModifier: ReadBuildProperty(
                 options,
                 DefaultAccessModifier,
@@ -859,12 +964,14 @@ internal sealed class IdlModel
         IReadOnlyList<FunctionSpec> functions,
         HashSet<string> enumNames,
         HashSet<string> structNames,
-        string abiVersion)
+        string abiVersion,
+        Dictionary<string, FunctionParameterOverrideSpec> functionParameterOverrides)
     {
         Functions = functions;
         EnumNames = enumNames;
         StructNames = structNames;
         AbiVersion = abiVersion;
+        FunctionParameterOverrides = functionParameterOverrides;
     }
 
     public IReadOnlyList<FunctionSpec> Functions { get; }
@@ -874,6 +981,8 @@ internal sealed class IdlModel
     public HashSet<string> StructNames { get; }
 
     public string AbiVersion { get; }
+
+    public Dictionary<string, FunctionParameterOverrideSpec> FunctionParameterOverrides { get; }
 }
 
 internal sealed class FunctionSpec
@@ -946,6 +1055,22 @@ internal sealed class ParameterRenderSpec
     public string? Modifier { get; }
 
     public bool MarshalAsI1 { get; }
+}
+
+internal sealed class FunctionParameterOverrideSpec
+{
+    public FunctionParameterOverrideSpec(string managedType, string modifier, bool? marshalAsI1)
+    {
+        ManagedType = string.IsNullOrWhiteSpace(managedType) ? null : managedType.Trim();
+        Modifier = string.IsNullOrWhiteSpace(modifier) ? null : modifier.Trim();
+        MarshalAsI1 = marshalAsI1;
+    }
+
+    public string? ManagedType { get; }
+
+    public string? Modifier { get; }
+
+    public bool? MarshalAsI1 { get; }
 }
 
 internal sealed class GeneratorException : Exception

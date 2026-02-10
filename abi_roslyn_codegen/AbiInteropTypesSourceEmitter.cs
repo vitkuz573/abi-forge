@@ -86,6 +86,7 @@ internal static class AbiInteropTypesSourceEmitter
             var constants = ParseConstants(root);
             var callbackFieldOverrides = ParseBindingsOverrides(root, "callback_field_overrides");
             var structFieldOverrides = ParseBindingsOverrides(root, "struct_field_overrides");
+            var structLayoutOverrides = ParseStructLayoutOverrides(root);
             var functionNames = ParseFunctionNames(root);
             var functionFirstParams = ParseFunctionFirstParameterTypes(root);
 
@@ -96,6 +97,7 @@ internal static class AbiInteropTypesSourceEmitter
                 constants,
                 callbackFieldOverrides,
                 structFieldOverrides,
+                structLayoutOverrides,
                 functionNames,
                 functionFirstParams);
         }
@@ -164,6 +166,8 @@ internal static class AbiInteropTypesSourceEmitter
             signatureToDelegate[BuildDelegateSignatureKey(kv.Value)] = kv.Key;
         }
 
+        var generatedDelegatePrefix = DetermineGeneratedDelegatePrefix(delegates.Keys);
+
         foreach (var kv in model.Structs.Where(item => item.Key.EndsWith("_callbacks_t", StringComparison.Ordinal)))
         {
             foreach (var field in kv.Value.Fields)
@@ -186,9 +190,10 @@ internal static class AbiInteropTypesSourceEmitter
                 if (string.IsNullOrWhiteSpace(delegateName))
                 {
                     var generated = ToManagedTypeName(field.Name, stripTypedefSuffix: false) + "Cb";
-                    delegateName = generated.StartsWith("Lrtc", StringComparison.Ordinal)
-                        ? generated
-                        : "Lrtc" + generated;
+                    delegateName = !string.IsNullOrWhiteSpace(generatedDelegatePrefix) &&
+                        !generated.StartsWith(generatedDelegatePrefix, StringComparison.Ordinal)
+                        ? generatedDelegatePrefix + generated
+                        : generated;
                 }
 
                 callbackFieldTypes[field.Name] = delegateName;
@@ -216,11 +221,13 @@ internal static class AbiInteropTypesSourceEmitter
 
         if (model.Constants.Count > 0)
         {
-            builder.AppendLine("internal static class LrtcConstants");
+            var constantsClassName = SanitizeIdentifier(options.ConstantsClassName, "AbiConstants");
+            var constantPrefix = DetermineCommonConstantPrefix(model.Constants.Keys, model.FunctionNames);
+            builder.AppendLine($"internal static class {constantsClassName}");
             builder.AppendLine("{");
             foreach (var constant in model.Constants.OrderBy(item => item.Key, StringComparer.Ordinal))
             {
-                var managedName = ToManagedConstantName(constant.Key);
+                var managedName = ToManagedConstantName(constant.Key, constantPrefix);
                 builder.AppendLine($"    public const int {managedName} = {constant.Value};");
             }
             builder.AppendLine("}");
@@ -486,6 +493,49 @@ internal static class AbiInteropTypesSourceEmitter
         return result;
     }
 
+    private static Dictionary<string, StructLayoutOverrideSpec> ParseStructLayoutOverrides(JsonElement root)
+    {
+        var result = new Dictionary<string, StructLayoutOverrideSpec>(StringComparer.Ordinal);
+
+        if (!root.TryGetProperty("bindings", out var bindingsObj) || bindingsObj.ValueKind != JsonValueKind.Object)
+        {
+            return result;
+        }
+        if (!bindingsObj.TryGetProperty("interop", out var interopObj) || interopObj.ValueKind != JsonValueKind.Object)
+        {
+            return result;
+        }
+        if (!interopObj.TryGetProperty("struct_layout_overrides", out var overridesObj) ||
+            overridesObj.ValueKind != JsonValueKind.Object)
+        {
+            return result;
+        }
+
+        foreach (var property in overridesObj.EnumerateObject())
+        {
+            if (property.Value.ValueKind == JsonValueKind.Number)
+            {
+                if (property.Value.TryGetInt32(out var packValue) && packValue > 0)
+                {
+                    result[property.Name] = new StructLayoutOverrideSpec("Sequential", packValue);
+                }
+                continue;
+            }
+
+            if (property.Value.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var layout = ReadOptionalString(property.Value, "layout", "Sequential");
+            var pack = ReadOptionalPositiveInt(property.Value, "pack");
+            var normalizedLayout = NormalizeLayoutKind(layout);
+            result[property.Name] = new StructLayoutOverrideSpec(normalizedLayout, pack);
+        }
+
+        return result;
+    }
+
     private static HashSet<string> ParseFunctionNames(JsonElement root)
     {
         var result = new HashSet<string>(StringComparer.Ordinal);
@@ -556,6 +606,118 @@ internal static class AbiInteropTypesSourceEmitter
         return result;
     }
 
+    private static string DetermineGeneratedDelegatePrefix(IEnumerable<string> delegateNames)
+    {
+        var names = delegateNames
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        if (names.Length < 2)
+        {
+            return string.Empty;
+        }
+
+        var prefix = names[0];
+        for (var idx = 1; idx < names.Length && prefix.Length > 0; idx++)
+        {
+            var candidate = names[idx];
+            var max = Math.Min(prefix.Length, candidate.Length);
+            var pos = 0;
+            while (pos < max && prefix[pos] == candidate[pos])
+            {
+                pos++;
+            }
+
+            prefix = prefix.Substring(0, pos);
+        }
+
+        return prefix.Length >= 2 ? prefix : string.Empty;
+    }
+
+    private static string DetermineCommonConstantPrefix(
+        IEnumerable<string> names,
+        IEnumerable<string> functionNames)
+    {
+        var constants = names
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        if (constants.Length < 2)
+        {
+            var inferredPrefix = DetermineCommonIdentifierPrefix(functionNames);
+            if (string.IsNullOrWhiteSpace(inferredPrefix))
+            {
+                return string.Empty;
+            }
+
+            var candidate = inferredPrefix.ToUpperInvariant();
+            if (!candidate.EndsWith("_", StringComparison.Ordinal))
+            {
+                candidate += "_";
+            }
+
+            return constants.All(name => name.StartsWith(candidate, StringComparison.Ordinal))
+                ? candidate
+                : string.Empty;
+        }
+
+        var prefix = constants[0];
+        for (var idx = 1; idx < constants.Length && prefix.Length > 0; idx++)
+        {
+            var candidate = constants[idx];
+            var max = Math.Min(prefix.Length, candidate.Length);
+            var pos = 0;
+            while (pos < max && prefix[pos] == candidate[pos])
+            {
+                pos++;
+            }
+
+            prefix = prefix.Substring(0, pos);
+        }
+
+        var marker = prefix.LastIndexOf('_');
+        if (marker < 0)
+        {
+            return string.Empty;
+        }
+
+        return prefix.Substring(0, marker + 1);
+    }
+
+    private static string DetermineCommonIdentifierPrefix(IEnumerable<string> names)
+    {
+        var symbols = names
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        if (symbols.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var prefix = symbols[0];
+        for (var idx = 1; idx < symbols.Length && prefix.Length > 0; idx++)
+        {
+            var candidate = symbols[idx];
+            var max = Math.Min(prefix.Length, candidate.Length);
+            var pos = 0;
+            while (pos < max && prefix[pos] == candidate[pos])
+            {
+                pos++;
+            }
+
+            prefix = prefix.Substring(0, pos);
+        }
+
+        var marker = prefix.LastIndexOf('_');
+        if (marker < 0)
+        {
+            return string.Empty;
+        }
+
+        return prefix.Substring(0, marker + 1);
+    }
+
     private static void RenderEnum(StringBuilder builder, string enumName, EnumSpec spec)
     {
         var managedName = ToManagedTypeName(enumName, stripTypedefSuffix: true);
@@ -618,13 +780,16 @@ internal static class AbiInteropTypesSourceEmitter
         IReadOnlyDictionary<string, string> callbackFieldTypes)
     {
         var managedName = ToManagedTypeName(structName, stripTypedefSuffix: true);
-        if (string.Equals(structName, "lrtc_rtc_config_t", StringComparison.Ordinal))
+        var layoutSpec = model.StructLayoutOverrides.TryGetValue(structName, out var overrideSpec)
+            ? overrideSpec
+            : StructLayoutOverrideSpec.Default;
+        if (layoutSpec.Pack.HasValue)
         {
-            builder.AppendLine("[StructLayout(LayoutKind.Sequential, Pack = 8)]");
+            builder.AppendLine($"[StructLayout(LayoutKind.{layoutSpec.LayoutKind}, Pack = {layoutSpec.Pack.Value})]");
         }
         else
         {
-            builder.AppendLine("[StructLayout(LayoutKind.Sequential)]");
+            builder.AppendLine($"[StructLayout(LayoutKind.{layoutSpec.LayoutKind})]");
         }
         builder.AppendLine($"internal struct {managedName}");
         builder.AppendLine("{");
@@ -928,6 +1093,45 @@ internal static class AbiInteropTypesSourceEmitter
         return fallback;
     }
 
+    private static int? ReadOptionalPositiveInt(JsonElement obj, string key)
+    {
+        if (!obj.TryGetProperty(key, out var value) || value.ValueKind != JsonValueKind.Number)
+        {
+            return null;
+        }
+
+        if (!value.TryGetInt32(out var number) || number <= 0)
+        {
+            return null;
+        }
+
+        return number;
+    }
+
+    private static string NormalizeLayoutKind(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "Sequential";
+        }
+
+        var normalized = value.Trim().ToLowerInvariant();
+        if (normalized == "sequential")
+        {
+            return "Sequential";
+        }
+        if (normalized == "explicit")
+        {
+            return "Explicit";
+        }
+        if (normalized == "auto")
+        {
+            return "Auto";
+        }
+
+        return "Sequential";
+    }
+
     private static string NormalizeCType(string value)
     {
         var text = Regex.Replace(value, "\\s+", " ").Trim();
@@ -974,10 +1178,11 @@ internal static class AbiInteropTypesSourceEmitter
         return string.IsNullOrWhiteSpace(joined) ? "IntPtr" : joined;
     }
 
-    private static string ToManagedConstantName(string macroName)
+    private static string ToManagedConstantName(string macroName, string constantPrefix)
     {
-        var trimmed = macroName.StartsWith("LRTC_", StringComparison.Ordinal)
-            ? macroName.Substring(5)
+        var trimmed = !string.IsNullOrWhiteSpace(constantPrefix) &&
+            macroName.StartsWith(constantPrefix, StringComparison.Ordinal)
+            ? macroName.Substring(constantPrefix.Length)
             : macroName;
         return ToManagedTypeName(trimmed.ToLowerInvariant(), stripTypedefSuffix: false);
     }
@@ -1007,6 +1212,7 @@ internal sealed class IdlTypeModel
         Dictionary<string, string> constants,
         Dictionary<string, string> callbackFieldOverrides,
         Dictionary<string, string> structFieldOverrides,
+        Dictionary<string, StructLayoutOverrideSpec> structLayoutOverrides,
         HashSet<string> functionNames,
         Dictionary<string, string> functionFirstParameterTypes)
     {
@@ -1016,6 +1222,7 @@ internal sealed class IdlTypeModel
         Constants = constants;
         CallbackFieldOverrides = callbackFieldOverrides;
         StructFieldOverrides = structFieldOverrides;
+        StructLayoutOverrides = structLayoutOverrides;
         FunctionNames = functionNames;
         FunctionFirstParameterTypes = functionFirstParameterTypes;
 
@@ -1035,6 +1242,8 @@ internal sealed class IdlTypeModel
 
     public Dictionary<string, string> StructFieldOverrides { get; }
 
+    public Dictionary<string, StructLayoutOverrideSpec> StructLayoutOverrides { get; }
+
     public HashSet<string> FunctionNames { get; }
 
     public Dictionary<string, string> FunctionFirstParameterTypes { get; }
@@ -1042,6 +1251,21 @@ internal sealed class IdlTypeModel
     public HashSet<string> EnumNames { get; }
 
     public HashSet<string> StructNames { get; }
+}
+
+internal sealed class StructLayoutOverrideSpec
+{
+    public static readonly StructLayoutOverrideSpec Default = new("Sequential", null);
+
+    public StructLayoutOverrideSpec(string layoutKind, int? pack)
+    {
+        LayoutKind = string.IsNullOrWhiteSpace(layoutKind) ? "Sequential" : layoutKind;
+        Pack = pack;
+    }
+
+    public string LayoutKind { get; }
+
+    public int? Pack { get; }
 }
 
 internal sealed class EnumSpec

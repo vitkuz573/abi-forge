@@ -14,6 +14,7 @@ during compilation.
   - `AbiManagedApiMetadataPath`
   - `AbiNamespace`
   - `AbiClassName`
+  - `AbiConstantsClassName`
   - `AbiAccessModifier`
   - `AbiCallingConvention`
   - `AbiLibraryExpression`
@@ -31,13 +32,26 @@ during compilation.
 
 `managed_api.output_hints` supports rich hint-name shaping:
 
-- `pattern`: template with `{section}` and `{default}` tokens.
+- `pattern`: template tokens include:
+  `{section}`, `{section_pascal}`, `{section_snake}`, `{section_kebab}`, `{section_path}`,
+  `{default}`, `{default_stem}`, `{default_name}`,
+  `{namespace}`, `{namespace_path}`.
 - `prefix`: prepended to generated section hints.
 - `suffix`: appended when hint has no `.cs` extension.
 - `directory`: prepended path segment.
 - `sections`: per-section overrides map.
 - direct per-section keys (`callbacks`, `builder`, `handle_api`, `peer_connection_async`).
 - `apply_prefix_to_explicit`, `apply_directory_to_explicit`: control whether global layout applies to explicit overrides.
+
+### Interop Binding Overrides
+
+The generator consumes `bindings.interop` metadata embedded in IDL:
+
+- `struct_layout_overrides`: per-struct `StructLayout` overrides (`pack`, optional `layout`).
+- `functions.<name>.parameters.<param>`:
+  - `managed_type`
+  - `modifier` (`ref` / `out` / `in` / `none`)
+  - `marshal_as_i1` or `marshal_as: "i1"`
 
 ## Handle Contracts
 

@@ -78,16 +78,16 @@ internal static class ManagedApiSourceEmitter
         return new[]
         {
             new GeneratedSourceSpec(
-                model.OutputHints.ResolveHint("callbacks", DefaultCallbacksHint),
+                model.OutputHints.ResolveHint("callbacks", DefaultCallbacksHint, model.NamespaceName),
                 RenderCallbacksCode(model)),
             new GeneratedSourceSpec(
-                model.OutputHints.ResolveHint("builder", DefaultBuilderHint),
+                model.OutputHints.ResolveHint("builder", DefaultBuilderHint, model.NamespaceName),
                 RenderBuilderCode(model)),
             new GeneratedSourceSpec(
-                model.OutputHints.ResolveHint("handle_api", DefaultHandleApiHint),
+                model.OutputHints.ResolveHint("handle_api", DefaultHandleApiHint, model.NamespaceName),
                 RenderHandleApiCode(model)),
             new GeneratedSourceSpec(
-                model.OutputHints.ResolveHint("peer_connection_async", DefaultPeerConnectionAsyncHint),
+                model.OutputHints.ResolveHint("peer_connection_async", DefaultPeerConnectionAsyncHint, model.NamespaceName),
                 RenderPeerConnectionAsyncCode(model)),
         };
     }
@@ -844,7 +844,7 @@ internal sealed class ManagedApiOutputHints
             sectionHints: new Dictionary<string, string>(StringComparer.Ordinal));
     }
 
-    public string ResolveHint(string sectionName, string defaultHint)
+    public string ResolveHint(string sectionName, string defaultHint, string namespaceName)
     {
         var hasExplicit = _sectionHints.TryGetValue(sectionName, out var explicitTemplate);
         var template = hasExplicit ? explicitTemplate : Pattern;
@@ -853,9 +853,7 @@ internal sealed class ManagedApiOutputHints
             template = DefaultPattern;
         }
 
-        var rendered = template
-            .Replace("{section}", sectionName)
-            .Replace("{default}", defaultHint);
+        var rendered = ApplyTemplateTokens(template, sectionName, defaultHint, namespaceName);
 
         if (string.IsNullOrWhiteSpace(rendered))
         {
@@ -880,6 +878,92 @@ internal sealed class ManagedApiOutputHints
         }
 
         return NormalizeHintName(candidate, defaultHint);
+    }
+
+    private static string ApplyTemplateTokens(
+        string template,
+        string sectionName,
+        string defaultHint,
+        string namespaceName)
+    {
+        var sectionSnake = ToSnakeOrKebabCase(sectionName, separator: '_');
+        var sectionKebab = ToSnakeOrKebabCase(sectionName, separator: '-');
+        var sectionPath = sectionName.Replace('.', '/').Replace('-', '/').Replace('_', '/');
+        var sectionPascal = ToPascalCase(sectionName);
+        var namespacePath = string.IsNullOrWhiteSpace(namespaceName)
+            ? string.Empty
+            : namespaceName.Replace('.', '/');
+        var defaultStem = StripCsExtension(defaultHint);
+
+        return template
+            .Replace("{section}", sectionName)
+            .Replace("{section_pascal}", sectionPascal)
+            .Replace("{section_snake}", sectionSnake)
+            .Replace("{section_kebab}", sectionKebab)
+            .Replace("{section_path}", sectionPath)
+            .Replace("{default}", defaultHint)
+            .Replace("{default_stem}", defaultStem)
+            .Replace("{default_name}", defaultStem)
+            .Replace("{namespace}", namespaceName)
+            .Replace("{namespace_path}", namespacePath);
+    }
+
+    private static string ToPascalCase(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var tokens = value
+            .Split(new[] { '_', '-', '.', '/' }, StringSplitOptions.RemoveEmptyEntries);
+
+        var builder = new StringBuilder();
+        foreach (var token in tokens)
+        {
+            var trimmed = token.Trim();
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+
+            builder.Append(char.ToUpperInvariant(trimmed[0]));
+            if (trimmed.Length > 1)
+            {
+                builder.Append(trimmed.Substring(1));
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static string ToSnakeOrKebabCase(string value, char separator)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var text = value.Replace('.', separator).Replace('-', separator).Replace('_', separator);
+        var doubled = new string(separator, 2);
+        while (text.IndexOf(doubled, StringComparison.Ordinal) >= 0)
+        {
+            text = text.Replace(doubled, new string(separator, 1));
+        }
+
+        return text.Trim(separator).ToLowerInvariant();
+    }
+
+    private static string StripCsExtension(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        return value.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)
+            ? value.Substring(0, value.Length - 3)
+            : value;
     }
 
     private static string CombinePath(string left, string right)
