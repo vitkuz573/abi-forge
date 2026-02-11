@@ -54,6 +54,12 @@ The generator consumes `bindings.interop` metadata embedded in IDL:
   - `managed_type`
   - `modifier` (`ref` / `out` / `in` / `none`)
   - `marshal_as_i1` or `marshal_as: "i1"`
+- `output_hints` for interop source hint naming (`abi`, `types`, `handles`):
+  - tokens: `{section}`, `{section_pascal}`, `{section_snake}`, `{section_kebab}`, `{section_path}`,
+    `{class}`, `{class_path}`, `{namespace}`, `{namespace_path}`, `{target}`,
+    `{default}`, `{default_stem}`, `{default_name}`
+  - keys: `pattern`, `prefix`, `suffix`, `directory`, `sections`,
+    `apply_prefix_to_explicit`, `apply_directory_to_explicit`
 
 ### Managed API Optional Sections
 
@@ -74,12 +80,15 @@ and optional extensibility sections:
 
 ## Handle Contracts
 
-For each handle entry in managed metadata, project source must declare a matching
+For each handle entry in managed metadata, project source may declare a matching
 type (`namespace` + `cs_type`) as:
 
 - `partial class`
 - inheriting `System.Runtime.InteropServices.SafeHandle`
 - accessibility matching metadata (`public` or `internal`)
+
+If a handle type is missing in project source, generator emits a fallback `SafeHandle`
+class from metadata and reports a warning (`ABIGEN008`) instead of failing generation.
 
 Violations are reported as source-generator diagnostics (`ABIGEN008`-`ABIGEN012`).
 

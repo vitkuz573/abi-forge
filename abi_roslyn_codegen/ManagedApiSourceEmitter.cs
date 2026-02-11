@@ -9,10 +9,6 @@ namespace Abi.RoslynGenerator;
 internal static class ManagedApiSourceEmitter
 {
     private const int SupportedSchemaVersion = 2;
-    private const string DefaultCallbacksHint = "ManagedApi.Callbacks.g.cs";
-    private const string DefaultBuilderHint = "ManagedApi.Builder.g.cs";
-    private const string DefaultHandleApiHint = "ManagedApi.HandleApi.g.cs";
-    private const string DefaultPeerConnectionAsyncHint = "ManagedApi.PeerConnection.Async.g.cs";
 
     private static readonly HashSet<string> OutputHintsReservedKeys = new(StringComparer.Ordinal)
     {
@@ -23,6 +19,26 @@ internal static class ManagedApiSourceEmitter
         "apply_prefix_to_explicit",
         "apply_directory_to_explicit",
         "sections",
+    };
+
+    private static readonly BuiltInSectionRenderer[] BuiltInSectionRenderers =
+    {
+        new(
+            sectionName: "callbacks",
+            hasContent: static model => model.Callbacks.Count > 0,
+            render: static model => RenderCallbacksCode(model)),
+        new(
+            sectionName: "builder",
+            hasContent: static model => model.Builder != null,
+            render: static model => RenderBuilderCode(model)),
+        new(
+            sectionName: "handle_api",
+            hasContent: static model => model.HandleApiClasses.Count > 0,
+            render: static model => RenderHandleApiCode(model)),
+        new(
+            sectionName: "peer_connection_async",
+            hasContent: static model => model.PeerConnectionAsync != null,
+            render: static model => RenderPeerConnectionAsyncCode(model)),
     };
 
     public static ManagedApiModel ParseManagedApiMetadata(string text, IdlModel idlModel)
@@ -62,7 +78,7 @@ internal static class ManagedApiSourceEmitter
             var handleApiClasses = ParseHandleApi(root);
             var peerConnectionAsync = ParsePeerConnectionAsync(root);
             var customSections = ParseCustomSections(root);
-            var outputHints = ParseOutputHints(root);
+            var outputHints = ParseOutputHints(root, "managed_api");
 
             return new ManagedApiModel(
                 namespaceName,
@@ -78,29 +94,19 @@ internal static class ManagedApiSourceEmitter
     public static IReadOnlyList<GeneratedSourceSpec> RenderSources(ManagedApiModel model)
     {
         var result = new List<GeneratedSourceSpec>();
-        if (model.Callbacks.Count > 0)
+        foreach (var builtIn in BuiltInSectionRenderers)
         {
+            if (!builtIn.HasContent(model))
+            {
+                continue;
+            }
+
             result.Add(new GeneratedSourceSpec(
-                model.OutputHints.ResolveHint("callbacks", DefaultCallbacksHint, model.NamespaceName),
-                RenderCallbacksCode(model)));
-        }
-        if (model.Builder != null)
-        {
-            result.Add(new GeneratedSourceSpec(
-                model.OutputHints.ResolveHint("builder", DefaultBuilderHint, model.NamespaceName),
-                RenderBuilderCode(model)));
-        }
-        if (model.HandleApiClasses.Count > 0)
-        {
-            result.Add(new GeneratedSourceSpec(
-                model.OutputHints.ResolveHint("handle_api", DefaultHandleApiHint, model.NamespaceName),
-                RenderHandleApiCode(model)));
-        }
-        if (model.PeerConnectionAsync != null)
-        {
-            result.Add(new GeneratedSourceSpec(
-                model.OutputHints.ResolveHint("peer_connection_async", DefaultPeerConnectionAsyncHint, model.NamespaceName),
-                RenderPeerConnectionAsyncCode(model)));
+                model.OutputHints.ResolveHint(
+                    builtIn.SectionName,
+                    BuildManagedSectionDefaultHint(builtIn.SectionName),
+                    model.NamespaceName),
+                builtIn.Render(model)));
         }
 
         foreach (var section in model.CustomSections)
@@ -111,6 +117,59 @@ internal static class ManagedApiSourceEmitter
         }
 
         return result;
+    }
+
+    private static string BuildManagedSectionDefaultHint(string sectionName)
+    {
+        if (string.IsNullOrWhiteSpace(sectionName))
+        {
+            return "ManagedApi.g.cs";
+        }
+
+        var tokens = sectionName
+            .Split(new[] { '_', '-', '.', '/' }, StringSplitOptions.RemoveEmptyEntries);
+        var builder = new StringBuilder("ManagedApi.");
+        foreach (var token in tokens)
+        {
+            var trimmed = token.Trim();
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+
+            builder.Append(char.ToUpperInvariant(trimmed[0]));
+            if (trimmed.Length > 1)
+            {
+                builder.Append(trimmed.Substring(1));
+            }
+        }
+
+        if (builder.Length <= "ManagedApi.".Length)
+        {
+            return "ManagedApi.g.cs";
+        }
+
+        builder.Append(".g.cs");
+        return builder.ToString();
+    }
+
+    private readonly struct BuiltInSectionRenderer
+    {
+        public BuiltInSectionRenderer(
+            string sectionName,
+            Func<ManagedApiModel, bool> hasContent,
+            Func<ManagedApiModel, string> render)
+        {
+            SectionName = sectionName;
+            HasContent = hasContent;
+            Render = render;
+        }
+
+        public string SectionName { get; }
+
+        public Func<ManagedApiModel, bool> HasContent { get; }
+
+        public Func<ManagedApiModel, string> Render { get; }
     }
 
     private static string RenderCallbacksCode(ManagedApiModel model)
@@ -222,7 +281,7 @@ internal static class ManagedApiSourceEmitter
         return builder.ToString();
     }
 
-    private static ManagedApiOutputHints ParseOutputHints(JsonElement root)
+    private static ManagedApiOutputHints ParseOutputHints(JsonElement root, string contextPrefix)
     {
         var outputHints = ManagedApiOutputHints.Default();
         if (!root.TryGetProperty("output_hints", out var outputHintsElement) ||
@@ -233,7 +292,7 @@ internal static class ManagedApiSourceEmitter
 
         if (outputHintsElement.ValueKind != JsonValueKind.Object)
         {
-            throw new GeneratorException("managed_api.output_hints must be an object when present.");
+            throw new GeneratorException($"{contextPrefix}.output_hints must be an object when present.");
         }
 
         var sectionHints = new Dictionary<string, string>(StringComparer.Ordinal);
