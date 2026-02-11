@@ -56,6 +56,7 @@ The generated methods live in dedicated internal extension-surface classes
   - `enabled`: toggles public facade generation.
   - `class_suffix`: suffix for generated facade class names.
   - `method_prefix`: public method prefix (default: `Raw`).
+  - `typed_method_prefix`: prefix for generated typed-wrapper methods (default: `Typed`).
   - `section_suffix`: output-hint section suffix for facade sections.
   - `allow_int_ptr`: allow `IntPtr`/`nint` signatures in public facade.
 

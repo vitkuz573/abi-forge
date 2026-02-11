@@ -651,9 +651,16 @@ internal static class ManagedApiSourceEmitter
         var enabled = ReadOptionalBool(publicFacadeElement, "enabled", false);
         var classSuffix = ReadOptionalString(publicFacadeElement, "class_suffix", "_abi_facade");
         var methodPrefix = ReadOptionalString(publicFacadeElement, "method_prefix", "Raw");
+        var typedMethodPrefix = ReadOptionalString(publicFacadeElement, "typed_method_prefix", "Typed");
         var sectionSuffix = ReadOptionalString(publicFacadeElement, "section_suffix", "_abi_facade");
         var allowIntPtr = ReadOptionalBool(publicFacadeElement, "allow_int_ptr", false);
-        return new AutoAbiPublicFacadeSpec(enabled, classSuffix, methodPrefix, sectionSuffix, allowIntPtr);
+        return new AutoAbiPublicFacadeSpec(
+            enabled,
+            classSuffix,
+            methodPrefix,
+            typedMethodPrefix,
+            sectionSuffix,
+            allowIntPtr);
     }
 
     private static IReadOnlyList<AutoManagedSourceSpec> BuildAutoAbiSurfaceSources(
@@ -673,6 +680,7 @@ internal static class ManagedApiSourceEmitter
             .Where(item => string.Equals(item.NamespaceName, namespaceName, StringComparison.Ordinal))
             .OrderBy(item => item.CsType, StringComparer.Ordinal)
             .ToArray();
+        var handleTypeByCTypeKey = BuildHandleTypeByCTypeKey(handles);
         var publicHandleTypeNames = new HashSet<string>(
             handles.Select(static item => item.CsType),
             StringComparer.Ordinal);
@@ -702,7 +710,8 @@ internal static class ManagedApiSourceEmitter
                 var facadeMethods = BuildPublicFacadeMethods(
                     spec,
                     methods,
-                    publicHandleTypeNames);
+                    publicHandleTypeNames,
+                    handleTypeByCTypeKey);
                 if (facadeMethods.Count > 0)
                 {
                     var facadeSectionName = handle.CsType + spec.PublicFacade.SectionSuffix;
@@ -738,6 +747,29 @@ internal static class ManagedApiSourceEmitter
 
         var defaultHint = BuildManagedSectionDefaultHint(sectionName);
         sources.Add(new AutoManagedSourceSpec(sectionName, defaultHint, sourceText));
+    }
+
+    private static IReadOnlyDictionary<string, string> BuildHandleTypeByCTypeKey(
+        IEnumerable<ManagedHandleSpec> handles)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var handle in handles)
+        {
+            if (string.IsNullOrWhiteSpace(handle.CHandleType))
+            {
+                continue;
+            }
+
+            var cTypeInfo = ParseCTypeInfo(handle.CHandleType);
+            if (cTypeInfo.PointerDepth <= 0)
+            {
+                continue;
+            }
+
+            result[BuildCTypeKey(cTypeInfo.BaseType, cTypeInfo.PointerDepth)] = handle.CsType;
+        }
+
+        return result;
     }
 
     private static IReadOnlyList<AutoAbiMethodSpec> BuildHandleAbiMethods(
@@ -809,7 +841,7 @@ internal static class ManagedApiSourceEmitter
             var parameter = function.Parameters[index];
             var mapped = MapManagedParameter(function, parameter, idlModel);
             var parameterName = SanitizeParameterName(parameter.Name, "arg" + index);
-            parameters.Add(new AutoAbiParameterSpec(parameterName, mapped.TypeName, mapped.Modifier));
+            parameters.Add(new AutoAbiParameterSpec(parameterName, mapped.TypeName, mapped.Modifier, parameter.CType));
             invocationArguments.Add(BuildInvocationArgument(mapped.Modifier, parameterName));
         }
 
@@ -817,6 +849,7 @@ internal static class ManagedApiSourceEmitter
         return new AutoAbiMethodSpec(
             methodName,
             returnType,
+            function.CReturnType,
             parameters,
             invocationArguments,
             function.Name);
@@ -825,29 +858,130 @@ internal static class ManagedApiSourceEmitter
     private static IReadOnlyList<AutoAbiFacadeMethodSpec> BuildPublicFacadeMethods(
         AutoAbiSurfaceSpec spec,
         IReadOnlyList<AutoAbiMethodSpec> methods,
-        HashSet<string> publicHandleTypeNames)
+        HashSet<string> publicHandleTypeNames,
+        IReadOnlyDictionary<string, string> handleTypeByCTypeKey)
     {
         var result = new List<AutoAbiFacadeMethodSpec>();
         var usedNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var method in methods)
         {
-            if (!IsPublicFacadeSignature(method, spec.PublicFacade, publicHandleTypeNames))
+            if (IsRawPublicFacadeSignatureAllowed(method, spec.PublicFacade, publicHandleTypeNames))
+            {
+                var rawMethodName = DerivePublicFacadeMethodName(
+                    method.MethodName,
+                    spec.MethodPrefix,
+                    spec.PublicFacade.MethodPrefix);
+                rawMethodName = EnsureUniqueMethodName(rawMethodName, usedNames);
+
+                result.Add(new AutoAbiFacadeMethodSpec(
+                    publicMethodName: rawMethodName,
+                    returnType: method.ReturnType,
+                    parameters: method.Parameters,
+                    forwardedArguments: method.Parameters
+                        .Select(parameter => BuildInvocationArgument(parameter.Modifier, parameter.ParameterName))
+                        .ToArray(),
+                    innerMethodName: method.MethodName,
+                    nativeFunctionName: method.NativeFunctionName,
+                    handleReturnType: null));
+            }
+
+            if (!spec.PublicFacade.Enabled)
             {
                 continue;
             }
 
-            var publicMethodName = DerivePublicFacadeMethodName(
-                method.MethodName,
-                spec.MethodPrefix,
-                spec.PublicFacade.MethodPrefix);
-            publicMethodName = EnsureUniqueMethodName(publicMethodName, usedNames);
-            result.Add(new AutoAbiFacadeMethodSpec(publicMethodName, method));
+            var typedMethod = BuildTypedPublicFacadeMethod(
+                method,
+                spec,
+                publicHandleTypeNames,
+                handleTypeByCTypeKey,
+                usedNames);
+            if (typedMethod != null)
+            {
+                result.Add(typedMethod);
+            }
         }
 
         return result;
     }
 
-    private static bool IsPublicFacadeSignature(
+    private static AutoAbiFacadeMethodSpec? BuildTypedPublicFacadeMethod(
+        AutoAbiMethodSpec method,
+        AutoAbiSurfaceSpec spec,
+        HashSet<string> publicHandleTypeNames,
+        IReadOnlyDictionary<string, string> handleTypeByCTypeKey,
+        HashSet<string> usedNames)
+    {
+        var convertedParameters = new List<AutoAbiParameterSpec>(method.Parameters.Count);
+        var forwardedArguments = new List<string>(method.Parameters.Count);
+        var converted = false;
+
+        foreach (var parameter in method.Parameters)
+        {
+            var typedHandleName = ResolveHandleTypeByCType(parameter.CType, handleTypeByCTypeKey);
+            if (!string.IsNullOrWhiteSpace(typedHandleName) &&
+                string.IsNullOrWhiteSpace(parameter.Modifier) &&
+                IsPointerLikeType(parameter.TypeName))
+            {
+                convertedParameters.Add(new AutoAbiParameterSpec(
+                    parameter.ParameterName,
+                    typedHandleName + "?",
+                    modifier: null,
+                    cType: parameter.CType));
+                forwardedArguments.Add(parameter.ParameterName + "?.DangerousGetHandle() ?? IntPtr.Zero");
+                converted = true;
+                continue;
+            }
+
+            convertedParameters.Add(parameter);
+            forwardedArguments.Add(BuildInvocationArgument(parameter.Modifier, parameter.ParameterName));
+        }
+
+        string? handleReturnType = null;
+        var typedReturnType = method.ReturnType;
+        var typedReturnHandleName = ResolveHandleTypeByCType(method.ReturnCType, handleTypeByCTypeKey);
+        if (!string.IsNullOrWhiteSpace(typedReturnHandleName) && IsPointerLikeType(method.ReturnType))
+        {
+            typedReturnType = typedReturnHandleName + "?";
+            handleReturnType = typedReturnHandleName;
+            converted = true;
+        }
+
+        if (!converted)
+        {
+            return null;
+        }
+
+        if (!IsPublicTypeAllowed(typedReturnType, spec.PublicFacade, publicHandleTypeNames))
+        {
+            return null;
+        }
+
+        foreach (var parameter in convertedParameters)
+        {
+            if (!IsPublicTypeAllowed(parameter.TypeName, spec.PublicFacade, publicHandleTypeNames))
+            {
+                return null;
+            }
+        }
+
+        var typedMethodName = DerivePublicFacadeMethodName(
+            method.MethodName,
+            spec.MethodPrefix,
+            spec.PublicFacade.TypedMethodPrefix);
+        typedMethodName = EnsureUniqueMethodName(typedMethodName, usedNames);
+
+        return new AutoAbiFacadeMethodSpec(
+            publicMethodName: typedMethodName,
+            returnType: typedReturnType,
+            parameters: convertedParameters,
+            forwardedArguments: forwardedArguments,
+            innerMethodName: method.MethodName,
+            nativeFunctionName: method.NativeFunctionName,
+            handleReturnType: handleReturnType);
+    }
+
+    private static bool IsRawPublicFacadeSignatureAllowed(
         AutoAbiMethodSpec method,
         AutoAbiPublicFacadeSpec facadeSpec,
         HashSet<string> publicHandleTypeNames)
@@ -866,6 +1000,33 @@ internal static class ManagedApiSourceEmitter
         }
 
         return true;
+    }
+
+    private static bool IsPointerLikeType(string typeName)
+    {
+        return string.Equals(typeName, "IntPtr", StringComparison.Ordinal) ||
+            string.Equals(typeName, "UIntPtr", StringComparison.Ordinal) ||
+            string.Equals(typeName, "nint", StringComparison.Ordinal) ||
+            string.Equals(typeName, "nuint", StringComparison.Ordinal);
+    }
+
+    private static string? ResolveHandleTypeByCType(
+        string cType,
+        IReadOnlyDictionary<string, string> handleTypeByCTypeKey)
+    {
+        var cTypeInfo = ParseCTypeInfo(cType);
+        if (cTypeInfo.PointerDepth <= 0)
+        {
+            return null;
+        }
+
+        var key = BuildCTypeKey(cTypeInfo.BaseType, cTypeInfo.PointerDepth);
+        return handleTypeByCTypeKey.TryGetValue(key, out var handleTypeName) ? handleTypeName : null;
+    }
+
+    private static string BuildCTypeKey(string baseType, int pointerDepth)
+    {
+        return baseType + "#" + pointerDepth.ToString();
     }
 
     private static bool IsPublicTypeAllowed(
@@ -1003,30 +1164,36 @@ internal static class ManagedApiSourceEmitter
         foreach (var method in methods)
         {
             AppendLine(builder, 4, "/// <summary>");
-            AppendLine(builder, 4, $"/// Public facade over <c>{method.Inner.NativeFunctionName}</c>.");
+            AppendLine(builder, 4, $"/// Public facade over <c>{method.NativeFunctionName}</c>.");
             AppendLine(builder, 4, "/// </summary>");
             var allParameters = new List<string> { $"this {handle.CsType} owner" };
-            allParameters.AddRange(method.Inner.Parameters.Select(BuildParameterSignature));
+            allParameters.AddRange(method.Parameters.Select(BuildParameterSignature));
             AppendLine(
                 builder,
                 4,
-                $"public static {method.Inner.ReturnType} {method.PublicMethodName}({string.Join(", ", allParameters)})");
+                $"public static {method.ReturnType} {method.PublicMethodName}({string.Join(", ", allParameters)})");
             AppendLine(builder, 4, "{");
 
-            var forwardedArguments = method.Inner.Parameters
-                .Select(parameter => BuildInvocationArgument(parameter.Modifier, parameter.ParameterName))
-                .ToList();
-            var invocation = $"{internalSurfaceClassName}.{method.Inner.MethodName}(owner";
-            if (forwardedArguments.Count > 0)
+            var invocation = $"{internalSurfaceClassName}.{method.InnerMethodName}(owner";
+            if (method.ForwardedArguments.Count > 0)
             {
-                invocation += ", " + string.Join(", ", forwardedArguments);
+                invocation += ", " + string.Join(", ", method.ForwardedArguments);
             }
 
             invocation += ")";
 
-            if (string.Equals(method.Inner.ReturnType, "void", StringComparison.Ordinal))
+            if (string.Equals(method.ReturnType, "void", StringComparison.Ordinal))
             {
                 AppendLine(builder, 8, invocation + ";");
+            }
+            else if (!string.IsNullOrWhiteSpace(method.HandleReturnType))
+            {
+                AppendLine(builder, 8, $"var raw = {invocation};");
+                AppendLine(builder, 8, "if (raw == IntPtr.Zero)");
+                AppendLine(builder, 8, "{");
+                AppendLine(builder, 12, "return null;");
+                AppendLine(builder, 8, "}");
+                AppendLine(builder, 8, $"return new {method.HandleReturnType}(raw);");
             }
             else
             {
@@ -1735,12 +1902,14 @@ internal sealed class AutoAbiPublicFacadeSpec
         bool enabled,
         string classSuffix,
         string methodPrefix,
+        string typedMethodPrefix,
         string sectionSuffix,
         bool allowIntPtr)
     {
         Enabled = enabled;
         ClassSuffix = string.IsNullOrWhiteSpace(classSuffix) ? "_abi_facade" : classSuffix.Trim();
         MethodPrefix = methodPrefix?.Trim() ?? string.Empty;
+        TypedMethodPrefix = typedMethodPrefix?.Trim() ?? string.Empty;
         SectionSuffix = string.IsNullOrWhiteSpace(sectionSuffix) ? "_abi_facade" : sectionSuffix.Trim();
         AllowIntPtr = allowIntPtr;
     }
@@ -1750,6 +1919,8 @@ internal sealed class AutoAbiPublicFacadeSpec
     public string ClassSuffix { get; }
 
     public string MethodPrefix { get; }
+
+    public string TypedMethodPrefix { get; }
 
     public string SectionSuffix { get; }
 
@@ -1761,6 +1932,7 @@ internal sealed class AutoAbiPublicFacadeSpec
             enabled: false,
             classSuffix: "_abi_facade",
             methodPrefix: "Raw",
+            typedMethodPrefix: "Typed",
             sectionSuffix: "_abi_facade",
             allowIntPtr: false);
     }
@@ -1771,12 +1943,14 @@ internal sealed class AutoAbiMethodSpec
     public AutoAbiMethodSpec(
         string methodName,
         string returnType,
+        string returnCType,
         IReadOnlyList<AutoAbiParameterSpec> parameters,
         IReadOnlyList<string> invocationArguments,
         string nativeFunctionName)
     {
         MethodName = methodName;
         ReturnType = returnType;
+        ReturnCType = returnCType;
         Parameters = parameters;
         InvocationArguments = invocationArguments;
         NativeFunctionName = nativeFunctionName;
@@ -1785,6 +1959,8 @@ internal sealed class AutoAbiMethodSpec
     public string MethodName { get; }
 
     public string ReturnType { get; }
+
+    public string ReturnCType { get; }
 
     public IReadOnlyList<AutoAbiParameterSpec> Parameters { get; }
 
@@ -1795,11 +1971,12 @@ internal sealed class AutoAbiMethodSpec
 
 internal sealed class AutoAbiParameterSpec
 {
-    public AutoAbiParameterSpec(string parameterName, string typeName, string? modifier)
+    public AutoAbiParameterSpec(string parameterName, string typeName, string? modifier, string cType)
     {
         ParameterName = parameterName;
         TypeName = typeName;
         Modifier = modifier;
+        CType = cType;
     }
 
     public string ParameterName { get; }
@@ -1807,19 +1984,43 @@ internal sealed class AutoAbiParameterSpec
     public string TypeName { get; }
 
     public string? Modifier { get; }
+
+    public string CType { get; }
 }
 
 internal sealed class AutoAbiFacadeMethodSpec
 {
-    public AutoAbiFacadeMethodSpec(string publicMethodName, AutoAbiMethodSpec inner)
+    public AutoAbiFacadeMethodSpec(
+        string publicMethodName,
+        string returnType,
+        IReadOnlyList<AutoAbiParameterSpec> parameters,
+        IReadOnlyList<string> forwardedArguments,
+        string innerMethodName,
+        string nativeFunctionName,
+        string? handleReturnType)
     {
         PublicMethodName = publicMethodName;
-        Inner = inner;
+        ReturnType = returnType;
+        Parameters = parameters;
+        ForwardedArguments = forwardedArguments;
+        InnerMethodName = innerMethodName;
+        NativeFunctionName = nativeFunctionName;
+        HandleReturnType = handleReturnType;
     }
 
     public string PublicMethodName { get; }
 
-    public AutoAbiMethodSpec Inner { get; }
+    public string ReturnType { get; }
+
+    public IReadOnlyList<AutoAbiParameterSpec> Parameters { get; }
+
+    public IReadOnlyList<string> ForwardedArguments { get; }
+
+    public string InnerMethodName { get; }
+
+    public string NativeFunctionName { get; }
+
+    public string? HandleReturnType { get; }
 }
 
 internal sealed class ManagedApiOutputHints
