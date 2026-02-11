@@ -63,11 +63,7 @@ internal static class AbiInteropTypesSourceEmitter
     private static readonly HashSet<string> OutputHintsReservedKeys = new(StringComparer.Ordinal)
     {
         "pattern",
-        "prefix",
         "suffix",
-        "directory",
-        "apply_prefix_to_explicit",
-        "apply_directory_to_explicit",
         "sections",
     };
 
@@ -571,36 +567,23 @@ internal static class AbiInteropTypesSourceEmitter
         }
 
         var sectionHints = new Dictionary<string, string>(StringComparer.Ordinal);
-        var pattern = ReadOptionalString(outputHintsElement, "pattern", "{default}");
-        var prefix = ReadOptionalString(outputHintsElement, "prefix", string.Empty);
-        var suffix = ReadOptionalString(outputHintsElement, "suffix", ".g.cs");
-        var directory = ReadOptionalString(outputHintsElement, "directory", string.Empty);
-        var applyPrefixToExplicit = ReadOptionalBool(
-            outputHintsElement,
-            "apply_prefix_to_explicit",
-            false);
-        var applyDirectoryToExplicit = ReadOptionalBool(
-            outputHintsElement,
-            "apply_directory_to_explicit",
-            false);
+        var defaults = InteropOutputHints.Default();
+        var pattern = ReadOptionalString(outputHintsElement, "pattern", defaults.Pattern);
+        var suffix = ReadOptionalString(outputHintsElement, "suffix", defaults.Suffix);
+        ValidateOutputHintKeys(outputHintsElement, "bindings.interop");
 
-        CollectSectionHintsFromSectionsObject(outputHintsElement, sectionHints);
-        CollectSectionHintsFromKnownKeys(outputHintsElement, sectionHints);
-        CollectSectionHintsFromCustomKeys(outputHintsElement, sectionHints);
+        CollectSectionHintsFromSectionsObject(outputHintsElement, sectionHints, "bindings.interop");
 
         return new InteropOutputHints(
             pattern,
-            prefix,
             suffix,
-            directory,
-            applyPrefixToExplicit,
-            applyDirectoryToExplicit,
             sectionHints);
     }
 
     private static void CollectSectionHintsFromSectionsObject(
         JsonElement outputHintsElement,
-        Dictionary<string, string> sectionHints)
+        Dictionary<string, string> sectionHints,
+        string contextPrefix)
     {
         if (!outputHintsElement.TryGetProperty("sections", out var sectionsElement) ||
             sectionsElement.ValueKind == JsonValueKind.Null)
@@ -610,7 +593,7 @@ internal static class AbiInteropTypesSourceEmitter
 
         if (sectionsElement.ValueKind != JsonValueKind.Object)
         {
-            throw new GeneratorException("bindings.interop.output_hints.sections must be an object when present.");
+            throw new GeneratorException($"{contextPrefix}.output_hints.sections must be an object when present.");
         }
 
         foreach (var property in sectionsElement.EnumerateObject())
@@ -618,25 +601,14 @@ internal static class AbiInteropTypesSourceEmitter
             if (property.Value.ValueKind != JsonValueKind.String)
             {
                 throw new GeneratorException(
-                    $"bindings.interop.output_hints.sections.{property.Name} must be a string.");
+                    $"{contextPrefix}.output_hints.sections.{property.Name} must be a string.");
             }
 
             sectionHints[property.Name] = property.Value.GetString() ?? string.Empty;
         }
     }
 
-    private static void CollectSectionHintsFromKnownKeys(
-        JsonElement outputHintsElement,
-        Dictionary<string, string> sectionHints)
-    {
-        MapOptionalSectionHint(outputHintsElement, sectionHints, "abi", "abi");
-        MapOptionalSectionHint(outputHintsElement, sectionHints, "types", "types");
-        MapOptionalSectionHint(outputHintsElement, sectionHints, "handles", "handles");
-    }
-
-    private static void CollectSectionHintsFromCustomKeys(
-        JsonElement outputHintsElement,
-        Dictionary<string, string> sectionHints)
+    private static void ValidateOutputHintKeys(JsonElement outputHintsElement, string contextPrefix)
     {
         foreach (var property in outputHintsElement.EnumerateObject())
         {
@@ -645,33 +617,9 @@ internal static class AbiInteropTypesSourceEmitter
                 continue;
             }
 
-            if (property.Value.ValueKind != JsonValueKind.String)
-            {
-                throw new GeneratorException(
-                    $"bindings.interop.output_hints.{property.Name} must be a string.");
-            }
-
-            sectionHints[property.Name] = property.Value.GetString() ?? string.Empty;
+            throw new GeneratorException(
+                $"{contextPrefix}.output_hints.{property.Name} is not supported; use {contextPrefix}.output_hints.sections.{property.Name}.");
         }
-    }
-
-    private static void MapOptionalSectionHint(
-        JsonElement outputHintsElement,
-        Dictionary<string, string> sectionHints,
-        string key,
-        string sectionName)
-    {
-        if (!outputHintsElement.TryGetProperty(key, out var token))
-        {
-            return;
-        }
-
-        if (token.ValueKind != JsonValueKind.String)
-        {
-            throw new GeneratorException($"bindings.interop.output_hints.{key} must be a string.");
-        }
-
-        sectionHints[sectionName] = token.GetString() ?? string.Empty;
     }
 
     private static bool TryGetInteropObject(JsonElement root, out JsonElement interopObj)
@@ -1540,43 +1488,23 @@ internal sealed class InteropOutputHints
 
     public InteropOutputHints(
         string pattern,
-        string prefix,
         string suffix,
-        string directory,
-        bool applyPrefixToExplicit,
-        bool applyDirectoryToExplicit,
         Dictionary<string, string> sectionHints)
     {
         Pattern = string.IsNullOrWhiteSpace(pattern) ? DefaultPattern : pattern.Trim();
-        Prefix = prefix ?? string.Empty;
         Suffix = string.IsNullOrWhiteSpace(suffix) ? DefaultSuffix : suffix.Trim();
-        Directory = directory ?? string.Empty;
-        ApplyPrefixToExplicit = applyPrefixToExplicit;
-        ApplyDirectoryToExplicit = applyDirectoryToExplicit;
         _sectionHints = sectionHints;
     }
 
     public string Pattern { get; }
 
-    public string Prefix { get; }
-
     public string Suffix { get; }
-
-    public string Directory { get; }
-
-    public bool ApplyPrefixToExplicit { get; }
-
-    public bool ApplyDirectoryToExplicit { get; }
 
     public static InteropOutputHints Default()
     {
         return new InteropOutputHints(
             pattern: DefaultPattern,
-            prefix: string.Empty,
             suffix: DefaultSuffix,
-            directory: string.Empty,
-            applyPrefixToExplicit: false,
-            applyDirectoryToExplicit: false,
             sectionHints: new Dictionary<string, string>(StringComparer.Ordinal));
     }
 
@@ -1602,19 +1530,9 @@ internal sealed class InteropOutputHints
 
         var candidate = rendered.Trim().Replace('\\', '/');
 
-        if (!hasExplicit || ApplyPrefixToExplicit)
-        {
-            candidate = (Prefix ?? string.Empty) + candidate;
-        }
-
         if (!candidate.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
         {
             candidate += Suffix;
-        }
-
-        if ((!hasExplicit || ApplyDirectoryToExplicit) && !string.IsNullOrWhiteSpace(Directory))
-        {
-            candidate = CombinePath(Directory, candidate);
         }
 
         return NormalizeHintName(candidate, defaultHint);
@@ -1712,23 +1630,6 @@ internal sealed class InteropOutputHints
         return value.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)
             ? value.Substring(0, value.Length - 3)
             : value;
-    }
-
-    private static string CombinePath(string left, string right)
-    {
-        var normalizedLeft = left.Replace('\\', '/').Trim('/');
-        var normalizedRight = right.Replace('\\', '/').TrimStart('/');
-        if (string.IsNullOrWhiteSpace(normalizedLeft))
-        {
-            return normalizedRight;
-        }
-
-        if (string.IsNullOrWhiteSpace(normalizedRight))
-        {
-            return normalizedLeft;
-        }
-
-        return normalizedLeft + "/" + normalizedRight;
     }
 
     private static string NormalizeHintName(string value, string fallback)

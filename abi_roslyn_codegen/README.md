@@ -36,12 +36,9 @@ during compilation.
   `{section}`, `{section_pascal}`, `{section_snake}`, `{section_kebab}`, `{section_path}`,
   `{default}`, `{default_stem}`, `{default_name}`,
   `{namespace}`, `{namespace_path}`.
-- `prefix`: prepended to generated section hints.
 - `suffix`: appended when hint has no `.cs` extension.
-- `directory`: prepended path segment.
 - `sections`: per-section overrides map.
-- direct per-section keys (`callbacks`, `builder`, `handle_api`, `peer_connection_async`).
-- `apply_prefix_to_explicit`, `apply_directory_to_explicit`: control whether global layout applies to explicit overrides.
+- Canonical keys only: `pattern`, `suffix`, `sections`.
 
 ### Interop Binding Overrides
 
@@ -58,8 +55,7 @@ The generator consumes `bindings.interop` metadata embedded in IDL:
   - tokens: `{section}`, `{section_pascal}`, `{section_snake}`, `{section_kebab}`, `{section_path}`,
     `{class}`, `{class_path}`, `{namespace}`, `{namespace_path}`, `{target}`,
     `{default}`, `{default_stem}`, `{default_name}`
-  - keys: `pattern`, `prefix`, `suffix`, `directory`, `sections`,
-    `apply_prefix_to_explicit`, `apply_directory_to_explicit`
+  - canonical keys: `pattern`, `suffix`, `sections`
 
 ### Managed API Optional Sections
 
