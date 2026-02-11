@@ -38,6 +38,7 @@ during compilation.
   `{namespace}`, `{namespace_path}`.
 - `suffix`: appended when hint has no `.cs` extension.
 - `sections`: per-section overrides map.
+- Built-in managed API emissions are class-driven: section keys come from class names, not fixed labels.
 - Canonical keys only: `pattern`, `suffix`, `sections`.
 
 ### Interop Binding Overrides

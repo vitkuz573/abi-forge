@@ -17,26 +17,6 @@ internal static class ManagedApiSourceEmitter
         "sections",
     };
 
-    private static readonly BuiltInSectionRenderer[] BuiltInSectionRenderers =
-    {
-        new(
-            sectionName: "callbacks",
-            hasContent: static model => model.Callbacks.Count > 0,
-            render: static model => RenderCallbacksCode(model)),
-        new(
-            sectionName: "builder",
-            hasContent: static model => model.Builder != null,
-            render: static model => RenderBuilderCode(model)),
-        new(
-            sectionName: "handle_api",
-            hasContent: static model => model.HandleApiClasses.Count > 0,
-            render: static model => RenderHandleApiCode(model)),
-        new(
-            sectionName: "peer_connection_async",
-            hasContent: static model => model.PeerConnectionAsync != null,
-            render: static model => RenderPeerConnectionAsyncCode(model)),
-    };
-
     public static ManagedApiModel ParseManagedApiMetadata(string text, IdlModel idlModel)
     {
         JsonDocument document;
@@ -89,27 +69,60 @@ internal static class ManagedApiSourceEmitter
 
     public static IReadOnlyList<GeneratedSourceSpec> RenderSources(ManagedApiModel model)
     {
-        var result = new List<GeneratedSourceSpec>();
-        foreach (var builtIn in BuiltInSectionRenderers)
-        {
-            if (!builtIn.HasContent(model))
-            {
-                continue;
-            }
+        var renderedSections = new List<RenderedManagedSection>();
 
-            result.Add(new GeneratedSourceSpec(
-                model.OutputHints.ResolveHint(
-                    builtIn.SectionName,
-                    BuildManagedSectionDefaultHint(builtIn.SectionName),
-                    model.NamespaceName),
-                builtIn.Render(model)));
+        foreach (var callbackClass in model.Callbacks)
+        {
+            renderedSections.Add(new RenderedManagedSection(
+                sectionName: callbackClass.ClassName,
+                defaultHint: BuildManagedSectionDefaultHint(callbackClass.ClassName),
+                sourceText: RenderCallbackClassCode(model.NamespaceName, callbackClass)));
+        }
+
+        if (model.Builder != null)
+        {
+            renderedSections.Add(new RenderedManagedSection(
+                sectionName: model.Builder.ClassName,
+                defaultHint: BuildManagedSectionDefaultHint(model.Builder.ClassName),
+                sourceText: RenderSingleClassSectionCode(
+                    model.NamespaceName,
+                    model.Builder.ClassName,
+                    model.Builder.Methods)));
+        }
+
+        foreach (var classSpec in model.HandleApiClasses)
+        {
+            renderedSections.Add(new RenderedManagedSection(
+                sectionName: classSpec.ClassName,
+                defaultHint: BuildManagedSectionDefaultHint(classSpec.ClassName),
+                sourceText: RenderSingleHandleApiClassCode(model.NamespaceName, classSpec)));
+        }
+
+        if (model.PeerConnectionAsync != null)
+        {
+            renderedSections.Add(new RenderedManagedSection(
+                sectionName: model.PeerConnectionAsync.ClassName,
+                defaultHint: BuildManagedSectionDefaultHint(model.PeerConnectionAsync.ClassName),
+                sourceText: RenderSingleClassSectionCode(
+                    model.NamespaceName,
+                    model.PeerConnectionAsync.ClassName,
+                    model.PeerConnectionAsync.Methods)));
         }
 
         foreach (var section in model.CustomSections)
         {
+            renderedSections.Add(new RenderedManagedSection(
+                sectionName: section.SectionName,
+                defaultHint: section.DefaultHint,
+                sourceText: RenderSingleClassSectionCode(model.NamespaceName, section.ClassName, section.Methods)));
+        }
+
+        var result = new List<GeneratedSourceSpec>(renderedSections.Count);
+        foreach (var section in renderedSections)
+        {
             result.Add(new GeneratedSourceSpec(
                 model.OutputHints.ResolveHint(section.SectionName, section.DefaultHint, model.NamespaceName),
-                RenderSingleClassSectionCode(model.NamespaceName, section.ClassName, section.Methods)));
+                section.SourceText));
         }
 
         return result;
@@ -149,115 +162,83 @@ internal static class ManagedApiSourceEmitter
         return builder.ToString();
     }
 
-    private readonly struct BuiltInSectionRenderer
+    private static string RenderCallbackClassCode(string namespaceName, CallbackClassSpec callbackClass)
     {
-        public BuiltInSectionRenderer(
-            string sectionName,
-            Func<ManagedApiModel, bool> hasContent,
-            Func<ManagedApiModel, string> render)
+        var builder = new StringBuilder();
+        AppendFileHeader(builder, namespaceName);
+        builder.AppendLine("/// <summary>");
+        builder.AppendLine($"/// {callbackClass.Summary}");
+        builder.AppendLine("/// </summary>");
+        builder.AppendLine($"public sealed class {callbackClass.ClassName}");
+        builder.AppendLine("{");
+
+        foreach (var field in callbackClass.Fields)
+        {
+            AppendLine(builder, 4, $"public {field.ManagedType} {field.ManagedName};");
+        }
+
+        builder.AppendLine();
+
+        foreach (var field in callbackClass.Fields)
+        {
+            AppendLine(builder, 4, $"private {field.DelegateType}? {field.DelegateField};");
+        }
+
+        builder.AppendLine();
+        AppendLine(builder, 4, $"internal {callbackClass.NativeStruct} BuildNative()");
+        AppendLine(builder, 4, "{");
+
+        foreach (var field in callbackClass.Fields)
+        {
+            var assignmentLines = RenderAssignment(field.DelegateField, field.AssignmentLines, callbackClass.ClassName);
+            foreach (var line in assignmentLines)
+            {
+                AppendLine(builder, 8, line);
+            }
+        }
+
+        builder.AppendLine();
+        AppendLine(builder, 8, $"return new {callbackClass.NativeStruct}");
+        AppendLine(builder, 8, "{");
+        foreach (var field in callbackClass.Fields)
+        {
+            AppendLine(builder, 12, $"{field.NativeField} = {field.DelegateField},");
+        }
+        AppendLine(builder, 8, "};");
+        AppendLine(builder, 4, "}");
+        builder.AppendLine("}");
+        builder.AppendLine();
+        return builder.ToString();
+    }
+
+    private static string RenderSingleHandleApiClassCode(
+        string namespaceName,
+        HandleApiClassSpec classSpec)
+    {
+        var builder = new StringBuilder();
+        AppendFileHeader(builder, namespaceName);
+        builder.AppendLine($"public sealed partial class {classSpec.ClassName}");
+        builder.AppendLine("{");
+        RenderMethodItems(builder, classSpec.Members, 4);
+        builder.AppendLine("}");
+        builder.AppendLine();
+        return builder.ToString();
+    }
+
+    private readonly struct RenderedManagedSection
+    {
+        public RenderedManagedSection(string sectionName, string defaultHint, string sourceText)
         {
             SectionName = sectionName;
-            HasContent = hasContent;
-            Render = render;
+            DefaultHint = defaultHint;
+            SourceText = sourceText;
         }
 
         public string SectionName { get; }
 
-        public Func<ManagedApiModel, bool> HasContent { get; }
+        public string DefaultHint { get; }
 
-        public Func<ManagedApiModel, string> Render { get; }
-    }
-
-    private static string RenderCallbacksCode(ManagedApiModel model)
-    {
-        var builder = new StringBuilder();
-        AppendFileHeader(builder, model.NamespaceName);
-
-        foreach (var callbackClass in model.Callbacks)
-        {
-            builder.AppendLine("/// <summary>");
-            builder.AppendLine($"/// {callbackClass.Summary}");
-            builder.AppendLine("/// </summary>");
-            builder.AppendLine($"public sealed class {callbackClass.ClassName}");
-            builder.AppendLine("{");
-
-            foreach (var field in callbackClass.Fields)
-            {
-                AppendLine(builder, 4, $"public {field.ManagedType} {field.ManagedName};");
-            }
-
-            builder.AppendLine();
-
-            foreach (var field in callbackClass.Fields)
-            {
-                AppendLine(builder, 4, $"private {field.DelegateType}? {field.DelegateField};");
-            }
-
-            builder.AppendLine();
-            AppendLine(builder, 4, $"internal {callbackClass.NativeStruct} BuildNative()");
-            AppendLine(builder, 4, "{");
-
-            foreach (var field in callbackClass.Fields)
-            {
-                var assignmentLines = RenderAssignment(field.DelegateField, field.AssignmentLines, callbackClass.ClassName);
-                foreach (var line in assignmentLines)
-                {
-                    AppendLine(builder, 8, line);
-                }
-            }
-
-            builder.AppendLine();
-            AppendLine(builder, 8, $"return new {callbackClass.NativeStruct}");
-            AppendLine(builder, 8, "{");
-            foreach (var field in callbackClass.Fields)
-            {
-                AppendLine(builder, 12, $"{field.NativeField} = {field.DelegateField},");
-            }
-            AppendLine(builder, 8, "};");
-            AppendLine(builder, 4, "}");
-            builder.AppendLine("}");
-            builder.AppendLine();
-        }
-
-        return builder.ToString();
-    }
-
-    private static string RenderBuilderCode(ManagedApiModel model)
-    {
-        if (model.Builder == null)
-        {
-            return string.Empty;
-        }
-        return RenderSingleClassSectionCode(model.NamespaceName, model.Builder.ClassName, model.Builder.Methods);
-    }
-
-    private static string RenderHandleApiCode(ManagedApiModel model)
-    {
-        var builder = new StringBuilder();
-        AppendFileHeader(builder, model.NamespaceName);
-
-        foreach (var classSpec in model.HandleApiClasses)
-        {
-            builder.AppendLine($"public sealed partial class {classSpec.ClassName}");
-            builder.AppendLine("{");
-            RenderMethodItems(builder, classSpec.Members, 4);
-            builder.AppendLine("}");
-            builder.AppendLine();
-        }
-
-        return builder.ToString();
-    }
-
-    private static string RenderPeerConnectionAsyncCode(ManagedApiModel model)
-    {
-        if (model.PeerConnectionAsync == null)
-        {
-            return string.Empty;
-        }
-        return RenderSingleClassSectionCode(
-            model.NamespaceName,
-            model.PeerConnectionAsync.ClassName,
-            model.PeerConnectionAsync.Methods);
+        public string SourceText { get; }
     }
 
     private static string RenderSingleClassSectionCode(
