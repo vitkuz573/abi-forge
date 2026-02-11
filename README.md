@@ -97,6 +97,16 @@ python3 tools/abi_framework/abi_framework.py benchmark-gate \
   --budget abi/benchmark_budget.json \
   --output artifacts/abi/benchmark.gate.report.json
 
+# Validate plugin manifests auto-discovered from config generators
+python3 tools/abi_framework/abi_framework.py validate-plugin-manifest \
+  --repo-root . \
+  --config abi/config.json
+
+# Validate explicit plugin manifest file(s)
+python3 tools/abi_framework/abi_framework.py validate-plugin-manifest \
+  --manifest tools/lumenrtc_codegen/plugin.manifest.json \
+  --print-json
+
 # Audit waiver expiry/metadata
 python3 tools/abi_framework/abi_framework.py waiver-audit \
   --config abi/config.json \
@@ -196,12 +206,8 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
             "name": "stub",
             "kind": "external",
             "enabled": true,
-            "command": [
-              "python3",
-              "tools/codegen_stub.py",
-              "{idl}",
-              "{repo_root}/artifacts/my_target.stub.txt"
-            ]
+            "manifest": "tools/my_codegen/plugin.manifest.json",
+            "plugin": "my_codegen.stub"
           }
         ]
       },
@@ -236,6 +242,8 @@ Notes:
   - `strict`: fail on missing + extra generated symbols.
   - `required_only`: fail only on missing required symbols.
 - `bindings.metadata_path` and `bindings.metadata` are target-agnostic metadata inputs merged into `idl.bindings`.
+- Prefer `bindings.generators[].manifest` + `bindings.generators[].plugin` for deterministic plugin binding.
+- `bindings.generators[].command` can be used directly or as an explicit mirror of manifest entrypoint.
 - `codegen` command runs IDL generation plus configured language generators.
 - If `codegen.native_header_output_path`/`codegen.native_export_map_output_path` are set,
   `generate`/`codegen`/`sync` also refresh native ABI artifacts from IDL.
@@ -258,6 +266,7 @@ Both wrappers expose:
 - `waiver-audit`
 - `benchmark`
 - `benchmark-gate`
+- `validate-plugin-manifest`
 - `guardrails`
 - `generate`
 - `codegen`

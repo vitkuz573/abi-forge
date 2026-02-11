@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "package": "conformance.sample",
+  "plugins": [
+    {
+      "name": "sample.plugin",
+      "version": "1.0.0",
+      "entrypoint": {
+        "kind": "external",
+        "command": [
+          "python3",
+          "{repo_root}/tools/sample.py",
+          "--idl",
+          "{idl}",
+          "{check}"
+        ]
+      },
+      "capabilities": {
+        "supports_check": true,
+        "supports_dry_run": true,
+        "deterministic_output": true,
+        "requires_repo_root": true,
+        "writes_managed_sources": false
+      },
+      "contracts": {
+        "inputs": [
+          {
+            "name": "idl",
+            "path_arg": "--idl",
+            "required": true
+          }
+        ],
+        "outputs": []
+      },
+      "compatibility": {
+        "min_idl_schema_version": 1,
+        "max_idl_schema_version": 1,
+        "target_patterns": [
+          "^sample$"
+        ]
+      },
+      "diagnostics": {
+        "codes": [
+          "SAMPLE001"
+        ]
+      },
+      "owners": [
+        "@sample-owner"
+      ]
+    }
+  ]
+}

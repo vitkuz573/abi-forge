@@ -51,7 +51,7 @@ internal static class AbiInteropTypesSourceEmitter
     };
 
     private static readonly Regex CallbackTypedefRegex = new(
-        "^typedef\\s+(?<ret>.+?)\\s*\\(\\s*LUMENRTC_CALL\\s*\\*\\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*\\)\\s*\\((?<params>.*)\\)\\s*;?\\s*$",
+        "^typedef\\s+(?<ret>.+?)\\s*\\(\\s*(?:(?<call>[A-Za-z_][A-Za-z0-9_]*)\\s+)?\\*\\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*\\)\\s*\\((?<params>.*)\\)\\s*;?\\s*$",
         RegexOptions.Compiled
     );
 
@@ -80,9 +80,16 @@ internal static class AbiInteropTypesSourceEmitter
                 throw new GeneratorException("IDL root must be an object.");
             }
 
+            var callbackTypedefCallTokens = ParseInteropStringSet(root, "callback_typedef_call_tokens");
+            var callbackStructSuffixes = ParseInteropStringList(root, "callback_struct_suffixes");
+            if (callbackStructSuffixes.Count == 0)
+            {
+                callbackStructSuffixes.Add("_callbacks_t");
+            }
+
             var enums = ParseEnums(root);
             var structs = ParseStructs(root);
-            var delegates = ParseCallbackTypedefs(root);
+            var delegates = ParseCallbackTypedefs(root, callbackTypedefCallTokens);
             var constants = ParseConstants(root);
             var callbackFieldOverrides = ParseBindingsOverrides(root, "callback_field_overrides");
             var structFieldOverrides = ParseBindingsOverrides(root, "struct_field_overrides");
@@ -99,7 +106,9 @@ internal static class AbiInteropTypesSourceEmitter
                 structFieldOverrides,
                 structLayoutOverrides,
                 functionNames,
-                functionFirstParams);
+                functionFirstParams,
+                callbackTypedefCallTokens,
+                callbackStructSuffixes);
         }
     }
 
@@ -168,7 +177,7 @@ internal static class AbiInteropTypesSourceEmitter
 
         var generatedDelegatePrefix = DetermineGeneratedDelegatePrefix(delegates.Keys);
 
-        foreach (var kv in model.Structs.Where(item => item.Key.EndsWith("_callbacks_t", StringComparison.Ordinal)))
+        foreach (var kv in model.Structs.Where(item => IsCallbackStructName(item.Key, model)))
         {
             foreach (var field in kv.Value.Fields)
             {
@@ -235,7 +244,7 @@ internal static class AbiInteropTypesSourceEmitter
         }
 
         foreach (var structEntry in model.Structs
-            .Where(item => !item.Key.EndsWith("_callbacks_t", StringComparison.Ordinal))
+            .Where(item => !IsCallbackStructName(item.Key, model))
             .OrderBy(item => item.Key, StringComparer.Ordinal))
         {
             RenderStruct(builder, model, structEntry.Key, structEntry.Value, callbackFieldTypes);
@@ -247,7 +256,7 @@ internal static class AbiInteropTypesSourceEmitter
         }
 
         foreach (var structEntry in model.Structs
-            .Where(item => item.Key.EndsWith("_callbacks_t", StringComparison.Ordinal))
+            .Where(item => IsCallbackStructName(item.Key, model))
             .OrderBy(item => item.Key, StringComparer.Ordinal))
         {
             RenderStruct(builder, model, structEntry.Key, structEntry.Value, callbackFieldTypes);
@@ -399,7 +408,9 @@ internal static class AbiInteropTypesSourceEmitter
         return result;
     }
 
-    private static Dictionary<string, DelegateSpec> ParseCallbackTypedefs(JsonElement root)
+    private static Dictionary<string, DelegateSpec> ParseCallbackTypedefs(
+        JsonElement root,
+        HashSet<string> allowedCallTokens)
     {
         var result = new Dictionary<string, DelegateSpec>(StringComparer.Ordinal);
 
@@ -427,7 +438,7 @@ internal static class AbiInteropTypesSourceEmitter
                 continue;
             }
 
-            var parsed = ParseCallbackTypedefDeclaration(declaration!);
+            var parsed = ParseCallbackTypedefDeclaration(declaration!, allowedCallTokens);
             if (parsed != null)
             {
                 result[parsed.Name] = parsed;
@@ -461,15 +472,64 @@ internal static class AbiInteropTypesSourceEmitter
         return result;
     }
 
+    private static HashSet<string> ParseInteropStringSet(JsonElement root, string key)
+    {
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        var values = ParseInteropStringList(root, key);
+        foreach (var value in values)
+        {
+            result.Add(value);
+        }
+        return result;
+    }
+
+    private static List<string> ParseInteropStringList(JsonElement root, string key)
+    {
+        var result = new List<string>();
+        if (!TryGetInteropObject(root, out var interopObj))
+        {
+            return result;
+        }
+        if (!interopObj.TryGetProperty(key, out var token) || token.ValueKind != JsonValueKind.Array)
+        {
+            return result;
+        }
+
+        foreach (var item in token.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+            var value = item.GetString();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                result.Add(value!.Trim());
+            }
+        }
+        return result;
+    }
+
+    private static bool TryGetInteropObject(JsonElement root, out JsonElement interopObj)
+    {
+        interopObj = default;
+        if (!root.TryGetProperty("bindings", out var bindingsObj) || bindingsObj.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+        if (!bindingsObj.TryGetProperty("interop", out interopObj) || interopObj.ValueKind != JsonValueKind.Object)
+        {
+            interopObj = default;
+            return false;
+        }
+        return true;
+    }
+
     private static Dictionary<string, string> ParseBindingsOverrides(JsonElement root, string key)
     {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        if (!root.TryGetProperty("bindings", out var bindingsObj) || bindingsObj.ValueKind != JsonValueKind.Object)
-        {
-            return result;
-        }
-        if (!bindingsObj.TryGetProperty("interop", out var interopObj) || interopObj.ValueKind != JsonValueKind.Object)
+        if (!TryGetInteropObject(root, out var interopObj))
         {
             return result;
         }
@@ -497,11 +557,7 @@ internal static class AbiInteropTypesSourceEmitter
     {
         var result = new Dictionary<string, StructLayoutOverrideSpec>(StringComparer.Ordinal);
 
-        if (!root.TryGetProperty("bindings", out var bindingsObj) || bindingsObj.ValueKind != JsonValueKind.Object)
-        {
-            return result;
-        }
-        if (!bindingsObj.TryGetProperty("interop", out var interopObj) || interopObj.ValueKind != JsonValueKind.Object)
+        if (!TryGetInteropObject(root, out var interopObj))
         {
             return result;
         }
@@ -867,6 +923,18 @@ internal static class AbiInteropTypesSourceEmitter
         builder.AppendLine();
     }
 
+    private static bool IsCallbackStructName(string structName, IdlTypeModel model)
+    {
+        foreach (var suffix in model.CallbackStructSuffixes)
+        {
+            if (structName.EndsWith(suffix, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static string ExtractFieldType(string declaration, string fieldName)
     {
         var decl = declaration.Trim();
@@ -931,10 +999,20 @@ internal static class AbiInteropTypesSourceEmitter
         return "IntPtr";
     }
 
-    private static DelegateSpec? ParseCallbackTypedefDeclaration(string declaration)
+    private static DelegateSpec? ParseCallbackTypedefDeclaration(
+        string declaration,
+        HashSet<string> allowedCallTokens)
     {
         var match = CallbackTypedefRegex.Match(declaration.Trim());
         if (!match.Success)
+        {
+            return null;
+        }
+
+        var callToken = match.Groups["call"].Success ? match.Groups["call"].Value.Trim() : string.Empty;
+        if (allowedCallTokens.Count > 0 &&
+            !string.IsNullOrWhiteSpace(callToken) &&
+            !allowedCallTokens.Contains(callToken))
         {
             return null;
         }
@@ -1214,7 +1292,9 @@ internal sealed class IdlTypeModel
         Dictionary<string, string> structFieldOverrides,
         Dictionary<string, StructLayoutOverrideSpec> structLayoutOverrides,
         HashSet<string> functionNames,
-        Dictionary<string, string> functionFirstParameterTypes)
+        Dictionary<string, string> functionFirstParameterTypes,
+        HashSet<string> callbackTypedefCallTokens,
+        IReadOnlyList<string> callbackStructSuffixes)
     {
         Enums = enums;
         Structs = structs;
@@ -1225,6 +1305,8 @@ internal sealed class IdlTypeModel
         StructLayoutOverrides = structLayoutOverrides;
         FunctionNames = functionNames;
         FunctionFirstParameterTypes = functionFirstParameterTypes;
+        CallbackTypedefCallTokens = callbackTypedefCallTokens;
+        CallbackStructSuffixes = callbackStructSuffixes;
 
         EnumNames = new HashSet<string>(enums.Keys, StringComparer.Ordinal);
         StructNames = new HashSet<string>(structs.Keys, StringComparer.Ordinal);
@@ -1247,6 +1329,10 @@ internal sealed class IdlTypeModel
     public HashSet<string> FunctionNames { get; }
 
     public Dictionary<string, string> FunctionFirstParameterTypes { get; }
+
+    public HashSet<string> CallbackTypedefCallTokens { get; }
+
+    public IReadOnlyList<string> CallbackStructSuffixes { get; }
 
     public HashSet<string> EnumNames { get; }
 

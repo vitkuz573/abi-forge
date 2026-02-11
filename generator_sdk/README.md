@@ -2,6 +2,18 @@
 
 `abi_framework` runs language generators through `bindings.generators` entries with `kind: external`.
 
+Plugin metadata for SDK generators can be declared in a manifest and validated via:
+
+```bash
+python3 tools/abi_framework/abi_framework.py validate-plugin-manifest \
+  --manifest tools/abi_framework/generator_sdk/plugin.manifest.json
+
+# or auto-discovered from abi/config.json external generators
+python3 tools/abi_framework/abi_framework.py validate-plugin-manifest \
+  --repo-root . \
+  --config abi/config.json
+```
+
 ## Contract
 
 - Input: ABI IDL path via `{idl}` placeholder in command arguments.
@@ -22,17 +34,16 @@
         "name": "my-generator",
         "kind": "external",
         "enabled": true,
-        "command": [
-          "python3",
-          "tools/abi_framework/generator_sdk/external_generator_stub.py",
-          "{idl}",
-          "{repo_root}/artifacts/codegen/{target}.stub.txt"
-        ]
+        "manifest": "tools/my_codegen/plugin.manifest.json",
+        "plugin": "my_codegen.stub"
       }
     ]
   }
 }
 ```
+
+You can still provide `command` directly. When `manifest`/`plugin` and `command`
+are both set, `abi_framework` enforces that they are identical.
 
 Use `external_generator_stub.py` as a starting point for custom generators.
 

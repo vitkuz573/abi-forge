@@ -1,0 +1,36 @@
+{
+  "schema_version": 2,
+  "package": "",
+  "plugins": [
+    {
+      "name": "Invalid Name!",
+      "version": "",
+      "entrypoint": {
+        "kind": "python",
+        "command": []
+      },
+      "capabilities": {
+        "supports_check": "yes"
+      },
+      "contracts": {
+        "inputs": [
+          {
+            "name": "",
+            "path_arg": "",
+            "required": "true"
+          }
+        ]
+      },
+      "compatibility": {
+        "min_idl_schema_version": 3,
+        "max_idl_schema_version": 1,
+        "target_patterns": [
+          "("
+        ]
+      },
+      "owners": [
+        ""
+      ]
+    }
+  ]
+}

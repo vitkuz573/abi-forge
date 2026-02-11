@@ -61,6 +61,7 @@ internal static class ManagedApiSourceEmitter
             var builder = ParseBuilder(root);
             var handleApiClasses = ParseHandleApi(root);
             var peerConnectionAsync = ParsePeerConnectionAsync(root);
+            var customSections = ParseCustomSections(root);
             var outputHints = ParseOutputHints(root);
 
             return new ManagedApiModel(
@@ -69,27 +70,47 @@ internal static class ManagedApiSourceEmitter
                 builder,
                 handleApiClasses,
                 peerConnectionAsync,
+                customSections,
                 outputHints);
         }
     }
 
     public static IReadOnlyList<GeneratedSourceSpec> RenderSources(ManagedApiModel model)
     {
-        return new[]
+        var result = new List<GeneratedSourceSpec>();
+        if (model.Callbacks.Count > 0)
         {
-            new GeneratedSourceSpec(
+            result.Add(new GeneratedSourceSpec(
                 model.OutputHints.ResolveHint("callbacks", DefaultCallbacksHint, model.NamespaceName),
-                RenderCallbacksCode(model)),
-            new GeneratedSourceSpec(
+                RenderCallbacksCode(model)));
+        }
+        if (model.Builder != null)
+        {
+            result.Add(new GeneratedSourceSpec(
                 model.OutputHints.ResolveHint("builder", DefaultBuilderHint, model.NamespaceName),
-                RenderBuilderCode(model)),
-            new GeneratedSourceSpec(
+                RenderBuilderCode(model)));
+        }
+        if (model.HandleApiClasses.Count > 0)
+        {
+            result.Add(new GeneratedSourceSpec(
                 model.OutputHints.ResolveHint("handle_api", DefaultHandleApiHint, model.NamespaceName),
-                RenderHandleApiCode(model)),
-            new GeneratedSourceSpec(
+                RenderHandleApiCode(model)));
+        }
+        if (model.PeerConnectionAsync != null)
+        {
+            result.Add(new GeneratedSourceSpec(
                 model.OutputHints.ResolveHint("peer_connection_async", DefaultPeerConnectionAsyncHint, model.NamespaceName),
-                RenderPeerConnectionAsyncCode(model)),
-        };
+                RenderPeerConnectionAsyncCode(model)));
+        }
+
+        foreach (var section in model.CustomSections)
+        {
+            result.Add(new GeneratedSourceSpec(
+                model.OutputHints.ResolveHint(section.SectionName, section.DefaultHint, model.NamespaceName),
+                RenderSingleClassSectionCode(model.NamespaceName, section.ClassName, section.Methods)));
+        }
+
+        return result;
     }
 
     private static string RenderCallbacksCode(ManagedApiModel model)
@@ -148,16 +169,11 @@ internal static class ManagedApiSourceEmitter
 
     private static string RenderBuilderCode(ManagedApiModel model)
     {
-        var builder = new StringBuilder();
-        AppendFileHeader(builder, model.NamespaceName);
-
-        builder.AppendLine($"public sealed partial class {model.Builder.ClassName}");
-        builder.AppendLine("{");
-        RenderMethodItems(builder, model.Builder.Methods, 4);
-        builder.AppendLine("}");
-        builder.AppendLine();
-
-        return builder.ToString();
+        if (model.Builder == null)
+        {
+            return string.Empty;
+        }
+        return RenderSingleClassSectionCode(model.NamespaceName, model.Builder.ClassName, model.Builder.Methods);
     }
 
     private static string RenderHandleApiCode(ManagedApiModel model)
@@ -179,12 +195,27 @@ internal static class ManagedApiSourceEmitter
 
     private static string RenderPeerConnectionAsyncCode(ManagedApiModel model)
     {
-        var builder = new StringBuilder();
-        AppendFileHeader(builder, model.NamespaceName);
+        if (model.PeerConnectionAsync == null)
+        {
+            return string.Empty;
+        }
+        return RenderSingleClassSectionCode(
+            model.NamespaceName,
+            model.PeerConnectionAsync.ClassName,
+            model.PeerConnectionAsync.Methods);
+    }
 
-        builder.AppendLine($"public sealed partial class {model.PeerConnectionAsync.ClassName}");
+    private static string RenderSingleClassSectionCode(
+        string namespaceName,
+        string className,
+        IReadOnlyList<MethodItemSpec> methods)
+    {
+        var builder = new StringBuilder();
+        AppendFileHeader(builder, namespaceName);
+
+        builder.AppendLine($"public sealed partial class {className}");
         builder.AppendLine("{");
-        RenderMethodItems(builder, model.PeerConnectionAsync.Methods, 4);
+        RenderMethodItems(builder, methods, 4);
         builder.AppendLine("}");
         builder.AppendLine();
 
@@ -333,7 +364,11 @@ internal static class ManagedApiSourceEmitter
     private static IReadOnlyList<CallbackClassSpec> ParseCallbacks(JsonElement root)
     {
         if (!root.TryGetProperty("callbacks", out var callbacksElement) ||
-            callbacksElement.ValueKind != JsonValueKind.Array)
+            callbacksElement.ValueKind == JsonValueKind.Null)
+        {
+            return Array.Empty<CallbackClassSpec>();
+        }
+        if (callbacksElement.ValueKind != JsonValueKind.Array)
         {
             throw new GeneratorException("managed_api.callbacks must be an array.");
         }
@@ -399,10 +434,14 @@ internal static class ManagedApiSourceEmitter
         return callbacks;
     }
 
-    private static BuilderSpec ParseBuilder(JsonElement root)
+    private static BuilderSpec? ParseBuilder(JsonElement root)
     {
         if (!root.TryGetProperty("builder", out var builderElement) ||
-            builderElement.ValueKind != JsonValueKind.Object)
+            builderElement.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+        if (builderElement.ValueKind != JsonValueKind.Object)
         {
             throw new GeneratorException("managed_api.builder must be an object.");
         }
@@ -415,7 +454,11 @@ internal static class ManagedApiSourceEmitter
     private static IReadOnlyList<HandleApiClassSpec> ParseHandleApi(JsonElement root)
     {
         if (!root.TryGetProperty("handle_api", out var handleApiElement) ||
-            handleApiElement.ValueKind != JsonValueKind.Array)
+            handleApiElement.ValueKind == JsonValueKind.Null)
+        {
+            return Array.Empty<HandleApiClassSpec>();
+        }
+        if (handleApiElement.ValueKind != JsonValueKind.Array)
         {
             throw new GeneratorException("managed_api.handle_api must be an array.");
         }
@@ -446,10 +489,14 @@ internal static class ManagedApiSourceEmitter
         return result;
     }
 
-    private static PeerConnectionAsyncSpec ParsePeerConnectionAsync(JsonElement root)
+    private static PeerConnectionAsyncSpec? ParsePeerConnectionAsync(JsonElement root)
     {
         if (!root.TryGetProperty("peer_connection_async", out var asyncElement) ||
-            asyncElement.ValueKind != JsonValueKind.Object)
+            asyncElement.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+        if (asyncElement.ValueKind != JsonValueKind.Object)
         {
             throw new GeneratorException("managed_api.peer_connection_async must be an object.");
         }
@@ -457,6 +504,46 @@ internal static class ManagedApiSourceEmitter
         var className = ReadRequiredString(asyncElement, "class", "managed_api.peer_connection_async");
         var methods = ParseMethodItems(asyncElement, "methods", "managed_api.peer_connection_async");
         return new PeerConnectionAsyncSpec(className, methods);
+    }
+
+    private static IReadOnlyList<CustomClassSectionSpec> ParseCustomSections(JsonElement root)
+    {
+        if (!root.TryGetProperty("custom_sections", out var sectionsElement) ||
+            sectionsElement.ValueKind == JsonValueKind.Null)
+        {
+            return Array.Empty<CustomClassSectionSpec>();
+        }
+        if (sectionsElement.ValueKind != JsonValueKind.Array)
+        {
+            throw new GeneratorException("managed_api.custom_sections must be an array.");
+        }
+
+        var result = new List<CustomClassSectionSpec>();
+        var seenNames = new HashSet<string>(StringComparer.Ordinal);
+        var index = 0;
+        foreach (var item in sectionsElement.EnumerateArray())
+        {
+            var context = $"managed_api.custom_sections[{index}]";
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                throw new GeneratorException($"{context} must be an object.");
+            }
+
+            var sectionName = ReadRequiredString(item, "name", context);
+            if (!seenNames.Add(sectionName))
+            {
+                throw new GeneratorException($"Duplicate custom section '{sectionName}'.");
+            }
+
+            var className = ReadRequiredString(item, "class", context);
+            var methods = ParseMethodItems(item, "methods", context);
+            var defaultHint = ReadOptionalString(item, "default_hint", className + ".g.cs");
+
+            result.Add(new CustomClassSectionSpec(sectionName, className, methods, defaultHint));
+            index++;
+        }
+
+        return result;
     }
 
     private static IReadOnlyList<MethodItemSpec> ParseMethodItems(
@@ -769,9 +856,10 @@ internal sealed class ManagedApiModel
     public ManagedApiModel(
         string namespaceName,
         IReadOnlyList<CallbackClassSpec> callbacks,
-        BuilderSpec builder,
+        BuilderSpec? builder,
         IReadOnlyList<HandleApiClassSpec> handleApiClasses,
-        PeerConnectionAsyncSpec peerConnectionAsync,
+        PeerConnectionAsyncSpec? peerConnectionAsync,
+        IReadOnlyList<CustomClassSectionSpec> customSections,
         ManagedApiOutputHints outputHints)
     {
         NamespaceName = namespaceName;
@@ -779,6 +867,7 @@ internal sealed class ManagedApiModel
         Builder = builder;
         HandleApiClasses = handleApiClasses;
         PeerConnectionAsync = peerConnectionAsync;
+        CustomSections = customSections;
         OutputHints = outputHints;
     }
 
@@ -786,11 +875,13 @@ internal sealed class ManagedApiModel
 
     public IReadOnlyList<CallbackClassSpec> Callbacks { get; }
 
-    public BuilderSpec Builder { get; }
+    public BuilderSpec? Builder { get; }
 
     public IReadOnlyList<HandleApiClassSpec> HandleApiClasses { get; }
 
-    public PeerConnectionAsyncSpec PeerConnectionAsync { get; }
+    public PeerConnectionAsyncSpec? PeerConnectionAsync { get; }
+
+    public IReadOnlyList<CustomClassSectionSpec> CustomSections { get; }
 
     public ManagedApiOutputHints OutputHints { get; }
 }
@@ -1121,6 +1212,29 @@ internal sealed class PeerConnectionAsyncSpec
     public string ClassName { get; }
 
     public IReadOnlyList<MethodItemSpec> Methods { get; }
+}
+
+internal sealed class CustomClassSectionSpec
+{
+    public CustomClassSectionSpec(
+        string sectionName,
+        string className,
+        IReadOnlyList<MethodItemSpec> methods,
+        string defaultHint)
+    {
+        SectionName = sectionName;
+        ClassName = className;
+        Methods = methods;
+        DefaultHint = defaultHint;
+    }
+
+    public string SectionName { get; }
+
+    public string ClassName { get; }
+
+    public IReadOnlyList<MethodItemSpec> Methods { get; }
+
+    public string DefaultHint { get; }
 }
 
 internal sealed class MethodItemSpec

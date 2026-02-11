@@ -519,6 +519,157 @@ typedef void (LUMENRTC_CALL *lrtc_void_cb)(void* user_data);
         self.assertEqual(exit_code, 0)
         self.assertTrue(marker_path.exists())
 
+    def test_codegen_external_generator_from_manifest_plugin(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        config = abi_framework.load_json(config_path)
+        target = config["targets"]["demo"]
+
+        marker_path = self.repo_root / "artifacts" / "generator.manifest.marker"
+        script_path = self.repo_root / "tools" / "stub_generator_manifest.py"
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(
+            "import pathlib\n"
+            "import sys\n"
+            "idl = pathlib.Path(sys.argv[1])\n"
+            "out = pathlib.Path(sys.argv[2])\n"
+            "out.parent.mkdir(parents=True, exist_ok=True)\n"
+            "out.write_text('manifest:' + idl.read_text(encoding='utf-8')[:32], encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+
+        manifest_path = self.repo_root / "tools" / "stub_plugin" / "plugin.manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_payload = {
+            "schema_version": 1,
+            "package": "demo.plugin",
+            "plugins": [
+                {
+                    "name": "demo.stub",
+                    "version": "1.0.0",
+                    "entrypoint": {
+                        "kind": "external",
+                        "command": [
+                            sys.executable,
+                            "{repo_root}/tools/stub_generator_manifest.py",
+                            "{idl}",
+                            "{repo_root}/artifacts/generator.manifest.marker",
+                            "{check}",
+                            "{dry_run}",
+                        ],
+                    },
+                }
+            ],
+        }
+        abi_framework.write_json(manifest_path, manifest_payload)
+
+        target["bindings"]["generators"] = [
+            {
+                "name": "stub_manifest",
+                "kind": "external",
+                "manifest": "{repo_root}/tools/stub_plugin/plugin.manifest.json",
+                "plugin": "demo.stub",
+            }
+        ]
+        abi_framework.write_json(config_path, config)
+
+        exit_code = abi_framework.command_codegen(
+            argparse.Namespace(
+                repo_root=str(self.repo_root),
+                config=str(config_path),
+                target="demo",
+                binary=None,
+                skip_binary=True,
+                idl_output=None,
+                dry_run=False,
+                check=False,
+                print_diff=False,
+                report_json=None,
+                fail_on_sync=False,
+            )
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(marker_path.exists())
+
+    def test_codegen_external_generator_manifest_plugin_not_found(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        config = abi_framework.load_json(config_path)
+        target = config["targets"]["demo"]
+
+        manifest_path = self.repo_root / "tools" / "stub_plugin" / "plugin.manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_payload = {
+            "schema_version": 1,
+            "package": "demo.plugin",
+            "plugins": [
+                {
+                    "name": "demo.stub",
+                    "version": "1.0.0",
+                    "entrypoint": {
+                        "kind": "external",
+                        "command": [sys.executable, "{repo_root}/tools/stub_generator_missing.py", "{idl}"],
+                    },
+                }
+            ],
+        }
+        abi_framework.write_json(manifest_path, manifest_payload)
+
+        target["bindings"]["generators"] = [
+            {
+                "name": "stub_manifest",
+                "kind": "external",
+                "manifest": "{repo_root}/tools/stub_plugin/plugin.manifest.json",
+                "plugin": "demo.unknown",
+            }
+        ]
+        abi_framework.write_json(config_path, config)
+
+        exit_code = abi_framework.command_codegen(
+            argparse.Namespace(
+                repo_root=str(self.repo_root),
+                config=str(config_path),
+                target="demo",
+                binary=None,
+                skip_binary=True,
+                idl_output=None,
+                dry_run=False,
+                check=False,
+                print_diff=False,
+                report_json=None,
+                fail_on_sync=False,
+            )
+        )
+        self.assertEqual(exit_code, 1)
+
+    def test_config_validation_generator_plugin_requires_manifest(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        config = abi_framework.load_json(config_path)
+        config["targets"]["demo"]["bindings"]["generators"] = [
+            {
+                "name": "invalid",
+                "kind": "external",
+                "plugin": "demo.invalid",
+                "command": [sys.executable, "tools/stub.py", "{idl}"],
+            }
+        ]
+        abi_framework.write_json(config_path, config)
+
+        with self.assertRaises(abi_framework.AbiFrameworkError):
+            _ = abi_framework.load_config(config_path)
+
+    def test_config_validation_generator_requires_command_or_manifest(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        config = abi_framework.load_json(config_path)
+        config["targets"]["demo"]["bindings"]["generators"] = [
+            {
+                "name": "invalid",
+                "kind": "external",
+            }
+        ]
+        abi_framework.write_json(config_path, config)
+
+        with self.assertRaises(abi_framework.AbiFrameworkError):
+            _ = abi_framework.load_config(config_path)
+
     def test_bindings_metadata_path_and_inline_merge_into_idl(self) -> None:
         config_path = self.repo_root / "abi" / "config.json"
         config = abi_framework.load_json(config_path)

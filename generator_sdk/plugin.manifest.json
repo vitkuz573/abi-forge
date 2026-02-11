@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "package": "abi_framework.generator_sdk",
+  "metadata": {
+    "description": "Reusable target-agnostic external generators bundled with abi_framework."
+  },
+  "plugins": [
+    {
+      "name": "abi_framework.symbol_contract",
+      "version": "1.0.0",
+      "description": "Generate symbol contract lockfile from declarative sources.",
+      "entrypoint": {
+        "kind": "external",
+        "command": [
+          "python3",
+          "{repo_root}/tools/abi_framework/generator_sdk/symbol_contract_generator.py",
+          "--idl",
+          "{idl}",
+          "--spec",
+          "{repo_root}/abi/bindings/lumenrtc.symbol_contract.sources.json",
+          "--out",
+          "{repo_root}/abi/bindings/lumenrtc.symbol_contract.json",
+          "{check}",
+          "{dry_run}"
+        ]
+      },
+      "capabilities": {
+        "supports_check": true,
+        "supports_dry_run": true,
+        "deterministic_output": true,
+        "requires_repo_root": true,
+        "writes_managed_sources": false
+      },
+      "contracts": {
+        "inputs": [
+          {
+            "name": "idl",
+            "path_arg": "--idl",
+            "required": true
+          },
+          {
+            "name": "symbol_contract_spec",
+            "path_arg": "--spec",
+            "required": true
+          }
+        ],
+        "outputs": [
+          {
+            "name": "symbol_contract_lockfile",
+            "path_arg": "--out",
+            "required": true
+          }
+        ]
+      },
+      "compatibility": {
+        "min_idl_schema_version": 1,
+        "max_idl_schema_version": 1
+      },
+      "diagnostics": {
+        "codes": [
+          "ABIGENSDK001"
+        ]
+      },
+      "owners": [
+        "@vitkuz573"
+      ]
+    }
+  ]
+}

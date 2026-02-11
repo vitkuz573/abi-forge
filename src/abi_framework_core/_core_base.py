@@ -403,6 +403,62 @@ def validate_config_payload(payload: dict[str, Any]) -> None:
                         raise AbiFrameworkError(
                             f"target '{target_name}'.bindings.generators[{idx}] must be object"
                         )
+                    name = item.get("name")
+                    if name is not None and (not isinstance(name, str) or not name):
+                        raise AbiFrameworkError(
+                            f"target '{target_name}'.bindings.generators[{idx}].name must be non-empty string when specified"
+                        )
+                    kind = item.get("kind")
+                    if kind is not None and (not isinstance(kind, str) or not kind):
+                        raise AbiFrameworkError(
+                            f"target '{target_name}'.bindings.generators[{idx}].kind must be non-empty string when specified"
+                        )
+                    if isinstance(kind, str) and kind.strip().lower() != "external":
+                        raise AbiFrameworkError(
+                            f"target '{target_name}'.bindings.generators[{idx}].kind must be external"
+                        )
+                    enabled = item.get("enabled")
+                    if enabled is not None and not isinstance(enabled, bool):
+                        raise AbiFrameworkError(
+                            f"target '{target_name}'.bindings.generators[{idx}].enabled must be boolean when specified"
+                        )
+                    options = item.get("options")
+                    if options is not None and not isinstance(options, dict):
+                        raise AbiFrameworkError(
+                            f"target '{target_name}'.bindings.generators[{idx}].options must be object when specified"
+                        )
+
+                    command = item.get("command")
+                    if command is not None:
+                        if not isinstance(command, list) or not command:
+                            raise AbiFrameworkError(
+                                f"target '{target_name}'.bindings.generators[{idx}].command must be a non-empty array when specified"
+                            )
+                        for token_idx, token in enumerate(command):
+                            if not isinstance(token, str) or not token:
+                                raise AbiFrameworkError(
+                                    f"target '{target_name}'.bindings.generators[{idx}].command[{token_idx}] must be non-empty string"
+                                )
+
+                    manifest = item.get("manifest")
+                    if manifest is not None and (not isinstance(manifest, str) or not manifest):
+                        raise AbiFrameworkError(
+                            f"target '{target_name}'.bindings.generators[{idx}].manifest must be non-empty string when specified"
+                        )
+                    plugin = item.get("plugin")
+                    if plugin is not None and (not isinstance(plugin, str) or not plugin):
+                        raise AbiFrameworkError(
+                            f"target '{target_name}'.bindings.generators[{idx}].plugin must be non-empty string when specified"
+                        )
+
+                    if command is None and manifest is None:
+                        raise AbiFrameworkError(
+                            f"target '{target_name}'.bindings.generators[{idx}] must specify at least one of: command, manifest"
+                        )
+                    if plugin is not None and manifest is None:
+                        raise AbiFrameworkError(
+                            f"target '{target_name}'.bindings.generators[{idx}].plugin requires manifest"
+                        )
 
         target_policy = target.get("policy")
         if target_policy is not None:

@@ -214,7 +214,11 @@ def command_doctor(args: argparse.Namespace) -> int:
                 issues.append(("warning", target_name, f"IDL output parent does not exist yet: {idl_output.parent}"))
 
             resolve_bindings_metadata(target=target, target_name=target_name, repo_root=repo_root)
-            normalize_generator_entries(target_name=target_name, target=target)
+            normalize_generator_entries(
+                repo_root=repo_root,
+                target_name=target_name,
+                target=target,
+            )
 
         except AbiFrameworkError as exc:
             issues.append(("error", target_name, f"codegen config invalid: {exc}"))

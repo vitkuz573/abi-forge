@@ -2,6 +2,15 @@ from __future__ import annotations
 
 from ._core_base import *  # noqa: F401,F403
 from ._core_compare import version_dict_to_str
+from ._core_plugins import (
+    find_manifest_plugins_by_command,
+    get_manifest_plugin_by_name,
+    get_manifest_plugin_entrypoint_command,
+    get_manifest_plugins,
+    load_and_validate_plugin_manifest,
+    normalize_external_command_template,
+    resolve_generator_manifest_path,
+)
 
 def normalize_c_type(value: str) -> str:
     text = sanitize_c_decl_text(value)
@@ -848,7 +857,12 @@ def render_native_export_map_from_idl(idl_payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def normalize_generator_entries(target_name: str, target: dict[str, Any]) -> list[dict[str, Any]]:
+def normalize_generator_entries(
+    *,
+    repo_root: Path,
+    target_name: str,
+    target: dict[str, Any],
+) -> list[dict[str, Any]]:
     bindings_cfg = target.get("bindings")
     if not isinstance(bindings_cfg, dict):
         return []
@@ -868,6 +882,7 @@ def normalize_generator_entries(target_name: str, target: dict[str, Any]) -> lis
             continue
         name = str(item.get("name") or f"generator_{idx}")
         kind = str(item.get("kind") or "external").strip().lower()
+        context = f"target '{target_name}'.bindings.generators[{idx}]"
         entry: dict[str, Any] = {
             "name": name,
             "kind": kind,
@@ -876,11 +891,47 @@ def normalize_generator_entries(target_name: str, target: dict[str, Any]) -> lis
         }
         if kind == "external":
             command = item.get("command")
-            if not isinstance(command, list) or not command or not all(isinstance(x, str) and x for x in command):
-                raise AbiFrameworkError(
-                    f"target '{target_name}'.bindings.generators[{idx}].command must be a non-empty string array"
+            command_template: list[str] | None = None
+            if command is not None:
+                command_template = normalize_external_command_template(
+                    command,
+                    f"{context}.command",
                 )
-            entry["command"] = command
+
+            manifest_path = resolve_generator_manifest_path(
+                generator=item,
+                repo_root=repo_root,
+                target_name=target_name,
+                discover_from_command=False,
+            )
+            if item.get("manifest") is not None and manifest_path is None:
+                raise AbiFrameworkError(
+                    f"{context}.manifest must resolve to a valid path token "
+                    f"(supported placeholders: '{{repo_root}}', '{{target}}')"
+                )
+
+            plugin_name_raw = item.get("plugin")
+            plugin_name: str | None = None
+            if plugin_name_raw is not None:
+                if not isinstance(plugin_name_raw, str) or not plugin_name_raw.strip():
+                    raise AbiFrameworkError(f"{context}.plugin must be a non-empty string when specified")
+                plugin_name = plugin_name_raw.strip()
+
+            if command_template is None and manifest_path is None:
+                raise AbiFrameworkError(
+                    f"{context} must configure at least one of: 'command' or 'manifest'"
+                )
+            if manifest_path is None and plugin_name is not None:
+                raise AbiFrameworkError(
+                    f"{context}.plugin requires {context}.manifest"
+                )
+
+            if command_template is not None:
+                entry["command"] = command_template
+            if manifest_path is not None:
+                entry["manifest_path"] = manifest_path.resolve()
+            if plugin_name is not None:
+                entry["plugin"] = plugin_name
         else:
             raise AbiFrameworkError(
                 f"target '{target_name}'.bindings.generators[{idx}].kind must be external"
@@ -888,6 +939,82 @@ def normalize_generator_entries(target_name: str, target: dict[str, Any]) -> lis
         entries.append(entry)
 
     return entries
+
+
+def _resolve_external_command_template_for_generator(
+    *,
+    target_name: str,
+    generator: dict[str, Any],
+) -> tuple[list[str], dict[str, Any]]:
+    name = str(generator.get("name") or "generator")
+    context = f"generator '{name}' for target '{target_name}'"
+
+    command_template = generator.get("command")
+    if command_template is not None:
+        command_template = normalize_external_command_template(
+            command_template,
+            f"{context}.command",
+        )
+
+    manifest_path = generator.get("manifest_path")
+    plugin_name_raw = generator.get("plugin")
+    plugin_name = plugin_name_raw.strip() if isinstance(plugin_name_raw, str) and plugin_name_raw.strip() else None
+
+    manifest_details: dict[str, Any] = {}
+    if isinstance(manifest_path, Path):
+        manifest_payload, _ = load_and_validate_plugin_manifest(manifest_path)
+        selected_plugin: dict[str, Any] | None = None
+
+        if plugin_name is not None:
+            selected_plugin = get_manifest_plugin_by_name(
+                manifest_payload,
+                plugin_name,
+                f"{context}.manifest",
+            )
+        elif command_template is not None:
+            matches = find_manifest_plugins_by_command(
+                manifest_payload,
+                command_template,
+                f"{context}.manifest",
+            )
+            if len(matches) == 0:
+                raise AbiFrameworkError(
+                    f"{context}: configured command does not match any plugin entrypoint in manifest '{manifest_path}'"
+                )
+            if len(matches) > 1:
+                names = ", ".join(str(item.get("name") or "<unnamed>") for item in matches)
+                raise AbiFrameworkError(
+                    f"{context}: configured command matches multiple manifest plugins ({names}); set explicit 'plugin'"
+                )
+            selected_plugin = matches[0]
+        else:
+            plugins = get_manifest_plugins(manifest_payload, f"{context}.manifest")
+            if len(plugins) != 1:
+                raise AbiFrameworkError(
+                    f"{context}: manifest '{manifest_path}' has {len(plugins)} plugins; set explicit 'plugin'"
+                )
+            selected_plugin = plugins[0]
+
+        plugin_command = get_manifest_plugin_entrypoint_command(
+            selected_plugin,
+            f"{context}.manifest.plugin",
+        )
+        if command_template is not None and plugin_command != command_template:
+            selected_name = str(selected_plugin.get("name") or "<unnamed>")
+            raise AbiFrameworkError(
+                f"{context}: command does not match manifest entrypoint for plugin '{selected_name}'"
+            )
+
+        command_template = plugin_command
+        manifest_details = {
+            "plugin_manifest": str(manifest_path),
+            "plugin": str(selected_plugin.get("name") or "<unnamed>"),
+        }
+
+    if command_template is None:
+        raise AbiFrameworkError(f"{context}: command template is not configured")
+
+    return command_template, manifest_details
 
 
 def run_generator_entry(
@@ -909,9 +1036,10 @@ def run_generator_entry(
         )
 
     if kind == "external":
-        command_template = generator.get("command")
-        if not isinstance(command_template, list):
-            raise AbiFrameworkError(f"Generator '{name}' for target '{target_name}' is missing command array")
+        command_template, manifest_details = _resolve_external_command_template_for_generator(
+            target_name=target_name,
+            generator=generator,
+        )
         replacements = {
             "{repo_root}": str(repo_root),
             "{target}": target_name,
@@ -936,6 +1064,7 @@ def run_generator_entry(
             "stdout": proc.stdout.strip(),
             "stderr": proc.stderr.strip(),
             "exit_code": proc.returncode,
+            **manifest_details,
         }
 
     raise AbiFrameworkError(f"Unsupported generator kind '{kind}' for target '{target_name}'")
@@ -950,17 +1079,32 @@ def run_code_generators_for_target(
     check: bool,
     dry_run: bool,
 ) -> list[dict[str, Any]]:
-    entries = normalize_generator_entries(target_name=target_name, target=target)
+    entries = normalize_generator_entries(
+        repo_root=repo_root,
+        target_name=target_name,
+        target=target,
+    )
     results: list[dict[str, Any]] = []
     for entry in entries:
-        result = run_generator_entry(
-            repo_root=repo_root,
-            target_name=target_name,
-            generator=entry,
-            idl_path=idl_path,
-            check=check,
-            dry_run=dry_run,
-        )
+        try:
+            result = run_generator_entry(
+                repo_root=repo_root,
+                target_name=target_name,
+                generator=entry,
+                idl_path=idl_path,
+                check=check,
+                dry_run=dry_run,
+            )
+        except AbiFrameworkError as exc:
+            result = {
+                "name": str(entry.get("name") or "generator"),
+                "kind": str(entry.get("kind") or "external"),
+                "status": "fail",
+                "command": "",
+                "stdout": "",
+                "stderr": str(exc),
+                "exit_code": -1,
+            }
         results.append(result)
     return results
 

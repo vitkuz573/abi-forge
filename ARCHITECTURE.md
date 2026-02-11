@@ -16,6 +16,7 @@ tools/abi_framework/
     core.py                           # aggregated domain API (re-export of split core modules)
     _core_base.py                     # schema/config validation + header parsing foundations
     _core_codegen.py                  # idl/native artifact generation + generator execution
+    _core_plugins.py                  # plugin manifest validation + command/manifest binding helpers
     _core_snapshot.py                 # binary export extraction + snapshot assembly
     _core_compare.py                  # diff/classification + markdown/sarif/html rendering
     _core_policy.py                   # policy rules/waivers + policy application

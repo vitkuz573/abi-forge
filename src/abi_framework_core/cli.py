@@ -18,6 +18,7 @@ from .commands import (
     command_release_prepare,
     command_snapshot,
     command_sync,
+    command_validate_plugin_manifest,
     command_verify,
     command_verify_all,
     command_waiver_audit,
@@ -249,6 +250,30 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_gate.add_argument("--budget", required=True, help="Budget JSON path.")
     benchmark_gate.add_argument("--output", help="Write gate report JSON path.")
     benchmark_gate.set_defaults(func=command_benchmark_gate)
+
+    plugin_manifest = sub.add_parser("validate-plugin-manifest", help="Validate external plugin manifest JSON.")
+    plugin_manifest.add_argument(
+        "--manifest",
+        action="append",
+        help="Path to plugin manifest JSON (repeatable).",
+    )
+    plugin_manifest.add_argument(
+        "--config",
+        help="Optional ABI config JSON. When provided, manifests are auto-discovered from external generators.",
+    )
+    plugin_manifest.add_argument(
+        "--repo-root",
+        default=".",
+        help="Repository root used to resolve generator command paths in --config mode.",
+    )
+    plugin_manifest.add_argument(
+        "--target",
+        help="Optional target name filter for --config mode.",
+    )
+    plugin_manifest.add_argument("--output", help="Write validation report JSON path.")
+    plugin_manifest.add_argument("--print-json", action="store_true", help="Print validation report JSON.")
+    plugin_manifest.add_argument("--fail-on-warnings", action="store_true", help="Treat warnings as failures.")
+    plugin_manifest.set_defaults(func=command_validate_plugin_manifest)
 
     list_targets = sub.add_parser("list-targets", help="List target names from config.")
     list_targets.add_argument("--config", required=True, help="Path to ABI config JSON.")

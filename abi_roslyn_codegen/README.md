@@ -48,10 +48,29 @@ during compilation.
 The generator consumes `bindings.interop` metadata embedded in IDL:
 
 - `struct_layout_overrides`: per-struct `StructLayout` overrides (`pack`, optional `layout`).
+- `callback_typedef_call_tokens`: optional allowed calling-convention tokens for callback typedef parsing.
+- `callback_struct_suffixes`: optional callback-struct suffix list (default: `["_callbacks_t"]`).
 - `functions.<name>.parameters.<param>`:
   - `managed_type`
   - `modifier` (`ref` / `out` / `in` / `none`)
   - `marshal_as_i1` or `marshal_as: "i1"`
+
+### Managed API Optional Sections
+
+`managed_api` supports optional built-in sections:
+
+- `callbacks`
+- `builder`
+- `handle_api`
+- `peer_connection_async`
+
+and optional extensibility sections:
+
+- `custom_sections[]` entries with:
+  - `name` (output-hint section key)
+  - `class`
+  - `methods`
+  - optional `default_hint`
 
 ## Handle Contracts
 
