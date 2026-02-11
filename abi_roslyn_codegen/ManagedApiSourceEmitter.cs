@@ -17,7 +17,54 @@ internal static class ManagedApiSourceEmitter
         "sections",
     };
 
-    public static ManagedApiModel ParseManagedApiMetadata(string text, IdlModel idlModel)
+    private static readonly Dictionary<string, string> PrimitiveTypeMap = new(StringComparer.Ordinal)
+    {
+        ["void"] = "void",
+        ["char"] = "sbyte",
+        ["signed char"] = "sbyte",
+        ["unsigned char"] = "byte",
+        ["short"] = "short",
+        ["unsigned short"] = "ushort",
+        ["int"] = "int",
+        ["unsigned int"] = "uint",
+        ["long"] = "nint",
+        ["unsigned long"] = "nuint",
+        ["long long"] = "long",
+        ["unsigned long long"] = "ulong",
+        ["int8_t"] = "sbyte",
+        ["uint8_t"] = "byte",
+        ["int16_t"] = "short",
+        ["uint16_t"] = "ushort",
+        ["int32_t"] = "int",
+        ["uint32_t"] = "uint",
+        ["int64_t"] = "long",
+        ["uint64_t"] = "ulong",
+        ["size_t"] = "nuint",
+        ["ssize_t"] = "nint",
+        ["intptr_t"] = "nint",
+        ["uintptr_t"] = "nuint",
+        ["float"] = "float",
+        ["double"] = "double",
+        ["bool"] = "bool",
+    };
+
+    private static readonly HashSet<string> CSharpKeywords = new(StringComparer.Ordinal)
+    {
+        "abstract", "as", "base", "bool", "break", "byte", "case", "catch", "char", "checked",
+        "class", "const", "continue", "decimal", "default", "delegate", "do", "double", "else",
+        "enum", "event", "explicit", "extern", "false", "finally", "fixed", "float", "for",
+        "foreach", "goto", "if", "implicit", "in", "int", "interface", "internal", "is", "lock",
+        "long", "namespace", "new", "null", "object", "operator", "out", "override", "params",
+        "private", "protected", "public", "readonly", "ref", "return", "sbyte", "sealed",
+        "short", "sizeof", "stackalloc", "static", "string", "struct", "switch", "this", "throw",
+        "true", "try", "typeof", "uint", "ulong", "unchecked", "unsafe", "ushort", "using",
+        "virtual", "void", "volatile", "while",
+    };
+
+    public static ManagedApiModel ParseManagedApiMetadata(
+        string text,
+        IdlModel idlModel,
+        ManagedHandlesModel handlesModel)
     {
         JsonDocument document;
         try
@@ -54,6 +101,9 @@ internal static class ManagedApiSourceEmitter
             var handleApiClasses = ParseHandleApi(root);
             var peerConnectionAsync = ParsePeerConnectionAsync(root);
             var customSections = ParseCustomSections(root);
+            var autoAbiSurface = ParseAutoAbiSurface(root);
+            var autoSections = BuildAutoAbiSurfaceSections(autoAbiSurface, idlModel, handlesModel, namespaceName);
+            var mergedSections = MergeCustomSections(customSections, autoSections);
             var outputHints = ParseOutputHints(root, "managed_api");
 
             return new ManagedApiModel(
@@ -62,7 +112,7 @@ internal static class ManagedApiSourceEmitter
                 builder,
                 handleApiClasses,
                 peerConnectionAsync,
-                customSections,
+                mergedSections,
                 outputHints);
         }
     }
@@ -532,6 +582,169 @@ internal static class ManagedApiSourceEmitter
         return result;
     }
 
+    private static AutoAbiSurfaceSpec ParseAutoAbiSurface(JsonElement root)
+    {
+        if (!root.TryGetProperty("auto_abi_surface", out var autoElement) ||
+            autoElement.ValueKind == JsonValueKind.Null)
+        {
+            return AutoAbiSurfaceSpec.Disabled();
+        }
+
+        if (autoElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new GeneratorException("managed_api.auto_abi_surface must be an object when present.");
+        }
+
+        var enabled = ReadOptionalBool(autoElement, "enabled", true);
+        var methodPrefix = ReadOptionalString(autoElement, "method_prefix", "Abi");
+        var sectionSuffix = ReadOptionalString(autoElement, "section_suffix", "_abi_surface");
+        var includeDeprecated = ReadOptionalBool(autoElement, "include_deprecated", false);
+
+        return new AutoAbiSurfaceSpec(enabled, methodPrefix, sectionSuffix, includeDeprecated);
+    }
+
+    private static IReadOnlyList<CustomClassSectionSpec> BuildAutoAbiSurfaceSections(
+        AutoAbiSurfaceSpec spec,
+        IdlModel idlModel,
+        ManagedHandlesModel handlesModel,
+        string namespaceName)
+    {
+        if (!spec.Enabled)
+        {
+            return Array.Empty<CustomClassSectionSpec>();
+        }
+
+        var sections = new List<CustomClassSectionSpec>();
+        foreach (var handle in handlesModel.Handles
+            .Where(item => string.Equals(item.NamespaceName, namespaceName, StringComparison.Ordinal))
+            .OrderBy(item => item.CsType, StringComparer.Ordinal))
+        {
+            var methods = BuildHandleAbiMethods(spec, idlModel, handle);
+            if (methods.Count == 0)
+            {
+                continue;
+            }
+
+            var sectionName = handle.CsType + spec.SectionSuffix;
+            var defaultHint = BuildManagedSectionDefaultHint(sectionName);
+            sections.Add(new CustomClassSectionSpec(sectionName, handle.CsType, methods, defaultHint));
+        }
+
+        return sections;
+    }
+
+    private static IReadOnlyList<MethodItemSpec> BuildHandleAbiMethods(
+        AutoAbiSurfaceSpec spec,
+        IdlModel idlModel,
+        ManagedHandleSpec handle)
+    {
+        if (string.IsNullOrWhiteSpace(handle.CHandleType))
+        {
+            return Array.Empty<MethodItemSpec>();
+        }
+
+        var methodPrefix = string.IsNullOrWhiteSpace(spec.MethodPrefix) ? "Abi" : spec.MethodPrefix;
+        var usedNames = new HashSet<string>(StringComparer.Ordinal);
+        var methods = new List<MethodItemSpec>();
+        var handleType = ParseCTypeInfo(handle.CHandleType);
+        var handleStem = BuildHandleStem(handleType.BaseType);
+
+        foreach (var function in idlModel.Functions.OrderBy(item => item.Name, StringComparer.Ordinal))
+        {
+            if (!spec.IncludeDeprecated && function.Deprecated)
+            {
+                continue;
+            }
+
+            if (string.Equals(function.Name, handle.ReleaseMethod, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (function.Parameters.Count == 0 || function.Parameters.Any(parameter => parameter.Variadic))
+            {
+                continue;
+            }
+
+            var firstParameter = function.Parameters[0];
+            if (!CTypeMatchesHandle(firstParameter.CType, handleType))
+            {
+                continue;
+            }
+
+            var method = BuildHandleAbiForwardMethod(function, idlModel, handleStem, methodPrefix, usedNames);
+            if (method != null)
+            {
+                methods.Add(method);
+            }
+        }
+
+        return methods;
+    }
+
+    private static MethodItemSpec? BuildHandleAbiForwardMethod(
+        FunctionSpec function,
+        IdlModel idlModel,
+        string handleStem,
+        string methodPrefix,
+        HashSet<string> usedNames)
+    {
+        var methodStem = DeriveFunctionStem(function.Name, handleStem);
+        var methodName = EnsureUniqueMethodName(
+            BuildPascalIdentifier(methodPrefix + "_" + methodStem, "AbiCall"),
+            usedNames);
+
+        var parameterSignatures = new List<string>();
+        var invocationArguments = new List<string> { "handle" };
+
+        for (var index = 1; index < function.Parameters.Count; index++)
+        {
+            var parameter = function.Parameters[index];
+            var mapped = MapManagedParameter(function, parameter, idlModel);
+            var parameterName = SanitizeParameterName(parameter.Name, "arg" + index);
+            parameterSignatures.Add(BuildParameterSignature(mapped, parameterName));
+            invocationArguments.Add(BuildInvocationArgument(mapped.Modifier, parameterName));
+        }
+
+        var returnType = MapManagedType(function.CReturnType, idlModel);
+        var signature = $"internal {returnType} {methodName}({string.Join(", ", parameterSignatures)})";
+        var invocation = $"NativeMethods.{function.Name}({string.Join(", ", invocationArguments)})";
+        var body = string.Equals(returnType, "void", StringComparison.Ordinal)
+            ? new[] { invocation + ";" }
+            : new[] { "return " + invocation + ";" };
+
+        return MethodItemSpec.ForSignature(signature, body);
+    }
+
+    private static IReadOnlyList<CustomClassSectionSpec> MergeCustomSections(
+        IReadOnlyList<CustomClassSectionSpec> userSections,
+        IReadOnlyList<CustomClassSectionSpec> autoSections)
+    {
+        if (autoSections.Count == 0)
+        {
+            return userSections;
+        }
+
+        var merged = new List<CustomClassSectionSpec>(userSections.Count + autoSections.Count);
+        merged.AddRange(userSections);
+
+        var seen = new HashSet<string>(
+            userSections.Select(static section => section.SectionName),
+            StringComparer.Ordinal);
+        foreach (var autoSection in autoSections)
+        {
+            if (!seen.Add(autoSection.SectionName))
+            {
+                throw new GeneratorException(
+                    $"managed_api.auto_abi_surface produced duplicate section '{autoSection.SectionName}'.");
+            }
+
+            merged.Add(autoSection);
+        }
+
+        return merged;
+    }
+
     private static IReadOnlyList<MethodItemSpec> ParseMethodItems(
         JsonElement parent,
         string key,
@@ -627,6 +840,290 @@ internal static class ManagedApiSourceEmitter
         rendered.AddRange(continuation);
         rendered[rendered.Count - 1] = rendered[rendered.Count - 1] + ";";
         return rendered;
+    }
+
+    private static string BuildParameterSignature(ParameterRenderSpec spec, string parameterName)
+    {
+        var modifier = string.IsNullOrWhiteSpace(spec.Modifier) ? string.Empty : spec.Modifier + " ";
+        return modifier + spec.TypeName + " " + parameterName;
+    }
+
+    private static string BuildInvocationArgument(string? modifier, string parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(modifier))
+        {
+            return parameterName;
+        }
+
+        return modifier + " " + parameterName;
+    }
+
+    private static ParameterRenderSpec MapManagedParameter(
+        FunctionSpec function,
+        ParameterSpec parameter,
+        IdlModel model)
+    {
+        var baseline = MapManagedParameterBaseline(parameter, model);
+        var key = BuildFunctionParameterOverrideKey(function.Name, parameter.Name);
+        if (!model.FunctionParameterOverrides.TryGetValue(key, out var overrideSpec))
+        {
+            return baseline;
+        }
+
+        var hasManagedTypeOverride = !string.IsNullOrWhiteSpace(overrideSpec.ManagedType);
+        var typeName = string.IsNullOrWhiteSpace(overrideSpec.ManagedType)
+            ? baseline.TypeName
+            : overrideSpec.ManagedType!;
+        var modifier = string.IsNullOrWhiteSpace(overrideSpec.Modifier)
+            ? (hasManagedTypeOverride ? null : baseline.Modifier)
+            : overrideSpec.Modifier;
+        var marshalAsI1 = overrideSpec.MarshalAsI1
+            ?? (string.IsNullOrWhiteSpace(overrideSpec.ManagedType)
+                ? baseline.MarshalAsI1
+                : string.Equals(typeName, "bool", StringComparison.Ordinal));
+
+        return new ParameterRenderSpec(typeName, modifier, marshalAsI1);
+    }
+
+    private static ParameterRenderSpec MapManagedParameterBaseline(ParameterSpec parameter, IdlModel model)
+    {
+        var info = ParseCTypeInfo(parameter.CType);
+        if (info.PointerDepth == 0)
+        {
+            var scalarType = MapManagedBaseType(info.BaseType, model);
+            return new ParameterRenderSpec(
+                scalarType,
+                modifier: null,
+                marshalAsI1: string.Equals(scalarType, "bool", StringComparison.Ordinal));
+        }
+
+        if (info.PointerDepth > 1)
+        {
+            return new ParameterRenderSpec("IntPtr", modifier: null, marshalAsI1: false);
+        }
+
+        if (model.StructNames.Contains(info.BaseType))
+        {
+            var structType = MapManagedBaseType(info.BaseType, model);
+            return new ParameterRenderSpec(structType, modifier: "ref", marshalAsI1: false);
+        }
+
+        return new ParameterRenderSpec("IntPtr", modifier: null, marshalAsI1: false);
+    }
+
+    private static string MapManagedType(string cType, IdlModel model)
+    {
+        if (cType == "...")
+        {
+            return "IntPtr";
+        }
+
+        var info = ParseCTypeInfo(cType);
+        if (info.PointerDepth > 0)
+        {
+            return "IntPtr";
+        }
+
+        return MapManagedBaseType(info.BaseType, model);
+    }
+
+    private static string MapManagedBaseType(string cTypeBase, IdlModel model)
+    {
+        var stripped = StripCTypeQualifiers(cTypeBase);
+
+        if (PrimitiveTypeMap.TryGetValue(stripped, out var primitive))
+        {
+            return primitive;
+        }
+
+        if (model.EnumNames.Contains(stripped) || model.StructNames.Contains(stripped))
+        {
+            return BuildPascalIdentifier(stripped, "IntPtr", stripTypedefSuffix: true);
+        }
+
+        if (stripped.EndsWith("_t", StringComparison.Ordinal))
+        {
+            return BuildPascalIdentifier(stripped, "IntPtr", stripTypedefSuffix: true);
+        }
+
+        if (stripped.EndsWith("_cb", StringComparison.Ordinal))
+        {
+            return BuildPascalIdentifier(stripped, "IntPtr", stripTypedefSuffix: false);
+        }
+
+        return BuildPascalIdentifier(stripped, "IntPtr", stripTypedefSuffix: false);
+    }
+
+    private static CTypeInfo ParseCTypeInfo(string cType)
+    {
+        var stripped = StripCTypeQualifiers(cType);
+        var pointerDepth = stripped.Count(ch => ch == '*');
+        var baseType = stripped.Replace("*", string.Empty).Trim();
+        return new CTypeInfo(baseType, pointerDepth);
+    }
+
+    private static string StripCTypeQualifiers(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var text = value.Trim()
+            .Replace("const", string.Empty)
+            .Replace("volatile", string.Empty)
+            .Replace("restrict", string.Empty)
+            .Replace("struct ", string.Empty)
+            .Replace("enum ", string.Empty)
+            .Replace("\t", " ")
+            .Replace("\r", " ")
+            .Replace("\n", " ");
+        while (text.Contains("  ", StringComparison.Ordinal))
+        {
+            text = text.Replace("  ", " ");
+        }
+
+        text = text.Replace(" *", "*")
+            .Replace("* ", "*")
+            .Trim();
+        return text;
+    }
+
+    private static bool CTypeMatchesHandle(string parameterType, CTypeInfo handleType)
+    {
+        var parameterInfo = ParseCTypeInfo(parameterType);
+        if (parameterInfo.PointerDepth != handleType.PointerDepth)
+        {
+            return false;
+        }
+
+        return string.Equals(parameterInfo.BaseType, handleType.BaseType, StringComparison.Ordinal);
+    }
+
+    private static string BuildHandleStem(string handleBaseType)
+    {
+        var stem = handleBaseType;
+        if (stem.StartsWith("lrtc_", StringComparison.Ordinal))
+        {
+            stem = stem.Substring("lrtc_".Length);
+        }
+
+        if (stem.EndsWith("_t", StringComparison.Ordinal))
+        {
+            stem = stem.Substring(0, stem.Length - 2);
+        }
+
+        return stem;
+    }
+
+    private static string DeriveFunctionStem(string functionName, string handleStem)
+    {
+        var handlePrefix = "lrtc_" + handleStem + "_";
+        if (functionName.StartsWith(handlePrefix, StringComparison.Ordinal) &&
+            functionName.Length > handlePrefix.Length)
+        {
+            return functionName.Substring(handlePrefix.Length);
+        }
+
+        if (functionName.StartsWith("lrtc_", StringComparison.Ordinal) &&
+            functionName.Length > "lrtc_".Length)
+        {
+            return functionName.Substring("lrtc_".Length);
+        }
+
+        return functionName;
+    }
+
+    private static string EnsureUniqueMethodName(string candidate, HashSet<string> usedNames)
+    {
+        if (usedNames.Add(candidate))
+        {
+            return candidate;
+        }
+
+        var suffix = 2;
+        while (!usedNames.Add(candidate + suffix.ToString()))
+        {
+            suffix++;
+        }
+
+        return candidate + suffix.ToString();
+    }
+
+    private static string BuildPascalIdentifier(
+        string value,
+        string fallback,
+        bool stripTypedefSuffix = false)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        var candidate = value.Trim();
+        if (stripTypedefSuffix && candidate.EndsWith("_t", StringComparison.Ordinal))
+        {
+            candidate = candidate.Substring(0, candidate.Length - 2);
+        }
+
+        var tokens = candidate
+            .Split(new[] { '_', '-', '.', '/', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        var builder = new StringBuilder();
+        foreach (var token in tokens)
+        {
+            var alnum = new string(token.Where(char.IsLetterOrDigit).ToArray());
+            if (alnum.Length == 0)
+            {
+                continue;
+            }
+
+            builder.Append(char.ToUpperInvariant(alnum[0]));
+            if (alnum.Length > 1)
+            {
+                builder.Append(alnum.Substring(1));
+            }
+        }
+
+        var result = builder.Length == 0 ? fallback : builder.ToString();
+        if (!char.IsLetter(result[0]) && result[0] != '_')
+        {
+            result = "_" + result;
+        }
+
+        return CSharpKeywords.Contains(result) ? "@" + result : result;
+    }
+
+    private static string SanitizeParameterName(string value, string fallback)
+    {
+        var candidate = string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+        var chars = candidate.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (char.IsLetterOrDigit(chars[i]) || chars[i] == '_')
+            {
+                continue;
+            }
+
+            chars[i] = '_';
+        }
+
+        var sanitized = new string(chars);
+        if (string.IsNullOrWhiteSpace(sanitized))
+        {
+            sanitized = fallback;
+        }
+
+        if (!char.IsLetter(sanitized[0]) && sanitized[0] != '_')
+        {
+            sanitized = "_" + sanitized;
+        }
+
+        return CSharpKeywords.Contains(sanitized) ? "@" + sanitized : sanitized;
+    }
+
+    private static string BuildFunctionParameterOverrideKey(string functionName, string parameterName)
+    {
+        return functionName + "::" + parameterName;
     }
 
     private static void RenderMethodItems(
@@ -870,6 +1367,38 @@ internal sealed class ManagedApiModel
     public IReadOnlyList<CustomClassSectionSpec> CustomSections { get; }
 
     public ManagedApiOutputHints OutputHints { get; }
+}
+
+internal sealed class AutoAbiSurfaceSpec
+{
+    public AutoAbiSurfaceSpec(
+        bool enabled,
+        string methodPrefix,
+        string sectionSuffix,
+        bool includeDeprecated)
+    {
+        Enabled = enabled;
+        MethodPrefix = string.IsNullOrWhiteSpace(methodPrefix) ? "Abi" : methodPrefix.Trim();
+        SectionSuffix = string.IsNullOrWhiteSpace(sectionSuffix) ? "_abi_surface" : sectionSuffix.Trim();
+        IncludeDeprecated = includeDeprecated;
+    }
+
+    public bool Enabled { get; }
+
+    public string MethodPrefix { get; }
+
+    public string SectionSuffix { get; }
+
+    public bool IncludeDeprecated { get; }
+
+    public static AutoAbiSurfaceSpec Disabled()
+    {
+        return new AutoAbiSurfaceSpec(
+            enabled: false,
+            methodPrefix: "Abi",
+            sectionSuffix: "_abi_surface",
+            includeDeprecated: false);
+    }
 }
 
 internal sealed class ManagedApiOutputHints

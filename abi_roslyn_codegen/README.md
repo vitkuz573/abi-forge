@@ -41,6 +41,16 @@ during compilation.
 - Built-in managed API emissions are class-driven: section keys come from class names, not fixed labels.
 - Canonical keys only: `pattern`, `suffix`, `sections`.
 
+### Managed API `auto_abi_surface`
+
+`managed_api.auto_abi_surface` can auto-generate low-level ABI forwarding methods for each
+managed handle class directly from IDL function signatures.
+
+- `enabled`: toggles auto-surface generation.
+- `method_prefix`: prefix for generated methods (default: `Abi`).
+- `section_suffix`: output-hint section suffix for generated per-class sections.
+- `include_deprecated`: include deprecated IDL functions when `true`.
+
 ### Interop Binding Overrides
 
 The generator consumes `bindings.interop` metadata embedded in IDL:
