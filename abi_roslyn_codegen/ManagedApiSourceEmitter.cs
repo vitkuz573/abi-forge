@@ -102,8 +102,7 @@ internal static class ManagedApiSourceEmitter
             var peerConnectionAsync = ParsePeerConnectionAsync(root);
             var customSections = ParseCustomSections(root);
             var autoAbiSurface = ParseAutoAbiSurface(root);
-            var autoSections = BuildAutoAbiSurfaceSections(autoAbiSurface, idlModel, handlesModel, namespaceName);
-            var mergedSections = MergeCustomSections(customSections, autoSections);
+            var autoSources = BuildAutoAbiSurfaceSources(autoAbiSurface, idlModel, handlesModel, namespaceName);
             var outputHints = ParseOutputHints(root, "managed_api");
 
             return new ManagedApiModel(
@@ -112,7 +111,8 @@ internal static class ManagedApiSourceEmitter
                 builder,
                 handleApiClasses,
                 peerConnectionAsync,
-                mergedSections,
+                customSections,
+                autoSources,
                 outputHints);
         }
     }
@@ -165,6 +165,14 @@ internal static class ManagedApiSourceEmitter
                 sectionName: section.SectionName,
                 defaultHint: section.DefaultHint,
                 sourceText: RenderSingleClassSectionCode(model.NamespaceName, section.ClassName, section.Methods)));
+        }
+
+        foreach (var autoSource in model.AutoSources)
+        {
+            renderedSections.Add(new RenderedManagedSection(
+                sectionName: autoSource.SectionName,
+                defaultHint: autoSource.DefaultHint,
+                sourceText: autoSource.SourceText));
         }
 
         var result = new List<GeneratedSourceSpec>(renderedSections.Count);
@@ -603,7 +611,7 @@ internal static class ManagedApiSourceEmitter
         return new AutoAbiSurfaceSpec(enabled, methodPrefix, sectionSuffix, includeDeprecated);
     }
 
-    private static IReadOnlyList<CustomClassSectionSpec> BuildAutoAbiSurfaceSections(
+    private static IReadOnlyList<AutoManagedSourceSpec> BuildAutoAbiSurfaceSources(
         AutoAbiSurfaceSpec spec,
         IdlModel idlModel,
         ManagedHandlesModel handlesModel,
@@ -611,10 +619,10 @@ internal static class ManagedApiSourceEmitter
     {
         if (!spec.Enabled)
         {
-            return Array.Empty<CustomClassSectionSpec>();
+            return Array.Empty<AutoManagedSourceSpec>();
         }
 
-        var sections = new List<CustomClassSectionSpec>();
+        var sources = new List<AutoManagedSourceSpec>();
         foreach (var handle in handlesModel.Handles
             .Where(item => string.Equals(item.NamespaceName, namespaceName, StringComparison.Ordinal))
             .OrderBy(item => item.CsType, StringComparer.Ordinal))
@@ -627,25 +635,26 @@ internal static class ManagedApiSourceEmitter
 
             var sectionName = handle.CsType + spec.SectionSuffix;
             var defaultHint = BuildManagedSectionDefaultHint(sectionName);
-            sections.Add(new CustomClassSectionSpec(sectionName, handle.CsType, methods, defaultHint));
+            var sourceText = RenderAutoAbiSurfaceCode(namespaceName, spec, handle, methods);
+            sources.Add(new AutoManagedSourceSpec(sectionName, defaultHint, sourceText));
         }
 
-        return sections;
+        return sources;
     }
 
-    private static IReadOnlyList<MethodItemSpec> BuildHandleAbiMethods(
+    private static IReadOnlyList<AutoAbiMethodSpec> BuildHandleAbiMethods(
         AutoAbiSurfaceSpec spec,
         IdlModel idlModel,
         ManagedHandleSpec handle)
     {
         if (string.IsNullOrWhiteSpace(handle.CHandleType))
         {
-            return Array.Empty<MethodItemSpec>();
+            return Array.Empty<AutoAbiMethodSpec>();
         }
 
         var methodPrefix = string.IsNullOrWhiteSpace(spec.MethodPrefix) ? "Abi" : spec.MethodPrefix;
         var usedNames = new HashSet<string>(StringComparer.Ordinal);
-        var methods = new List<MethodItemSpec>();
+        var methods = new List<AutoAbiMethodSpec>();
         var handleType = ParseCTypeInfo(handle.CHandleType);
         var handleStem = BuildHandleStem(handleType.BaseType);
 
@@ -682,7 +691,7 @@ internal static class ManagedApiSourceEmitter
         return methods;
     }
 
-    private static MethodItemSpec? BuildHandleAbiForwardMethod(
+    private static AutoAbiMethodSpec? BuildHandleAbiForwardMethod(
         FunctionSpec function,
         IdlModel idlModel,
         string handleStem,
@@ -695,7 +704,7 @@ internal static class ManagedApiSourceEmitter
             usedNames);
 
         var parameterSignatures = new List<string>();
-        var invocationArguments = new List<string> { "handle" };
+        var invocationArguments = new List<string> { "owner.DangerousGetHandle()" };
 
         for (var index = 1; index < function.Parameters.Count; index++)
         {
@@ -707,42 +716,61 @@ internal static class ManagedApiSourceEmitter
         }
 
         var returnType = MapManagedType(function.CReturnType, idlModel);
-        var signature = $"internal {returnType} {methodName}({string.Join(", ", parameterSignatures)})";
-        var invocation = $"NativeMethods.{function.Name}({string.Join(", ", invocationArguments)})";
-        var body = string.Equals(returnType, "void", StringComparison.Ordinal)
-            ? new[] { invocation + ";" }
-            : new[] { "return " + invocation + ";" };
-
-        return MethodItemSpec.ForSignature(signature, body);
+        return new AutoAbiMethodSpec(
+            methodName,
+            returnType,
+            parameterSignatures,
+            invocationArguments,
+            function.Name);
     }
 
-    private static IReadOnlyList<CustomClassSectionSpec> MergeCustomSections(
-        IReadOnlyList<CustomClassSectionSpec> userSections,
-        IReadOnlyList<CustomClassSectionSpec> autoSections)
+    private static string RenderAutoAbiSurfaceCode(
+        string namespaceName,
+        AutoAbiSurfaceSpec spec,
+        ManagedHandleSpec handle,
+        IReadOnlyList<AutoAbiMethodSpec> methods)
     {
-        if (autoSections.Count == 0)
+        var sectionName = handle.CsType + spec.SectionSuffix;
+        var surfaceClassName = BuildPascalIdentifier(sectionName, handle.CsType + "AbiSurface");
+        if (string.Equals(surfaceClassName, handle.CsType, StringComparison.Ordinal))
         {
-            return userSections;
+            surfaceClassName += "AbiSurface";
         }
 
-        var merged = new List<CustomClassSectionSpec>(userSections.Count + autoSections.Count);
-        merged.AddRange(userSections);
+        var builder = new StringBuilder();
+        AppendFileHeader(builder, namespaceName);
+        builder.AppendLine($"internal static class {surfaceClassName}");
+        builder.AppendLine("{");
 
-        var seen = new HashSet<string>(
-            userSections.Select(static section => section.SectionName),
-            StringComparer.Ordinal);
-        foreach (var autoSection in autoSections)
+        foreach (var method in methods)
         {
-            if (!seen.Add(autoSection.SectionName))
+            AppendLine(builder, 4, "/// <summary>");
+            AppendLine(builder, 4, $"/// ABI forwarder for <c>{method.NativeFunctionName}</c>.");
+            AppendLine(builder, 4, "/// </summary>");
+            var allParameters = new List<string> { $"this {handle.CsType} owner" };
+            allParameters.AddRange(method.ParameterSignatures);
+            AppendLine(builder, 4, $"internal static {method.ReturnType} {method.MethodName}({string.Join(", ", allParameters)})");
+            AppendLine(builder, 4, "{");
+            AppendLine(builder, 8, "if (owner is null)");
+            AppendLine(builder, 8, "{");
+            AppendLine(builder, 12, "throw new global::System.ArgumentNullException(nameof(owner));");
+            AppendLine(builder, 8, "}");
+            if (string.Equals(method.ReturnType, "void", StringComparison.Ordinal))
             {
-                throw new GeneratorException(
-                    $"managed_api.auto_abi_surface produced duplicate section '{autoSection.SectionName}'.");
+                AppendLine(builder, 8, $"NativeMethods.{method.NativeFunctionName}({string.Join(", ", method.InvocationArguments)});");
             }
-
-            merged.Add(autoSection);
+            else
+            {
+                AppendLine(builder, 8, $"var result = NativeMethods.{method.NativeFunctionName}({string.Join(", ", method.InvocationArguments)});");
+                AppendLine(builder, 8, "return result;");
+            }
+            AppendLine(builder, 4, "}");
+            builder.AppendLine();
         }
 
-        return merged;
+        builder.AppendLine("}");
+        builder.AppendLine();
+        return builder.ToString();
     }
 
     private static IReadOnlyList<MethodItemSpec> ParseMethodItems(
@@ -1343,6 +1371,7 @@ internal sealed class ManagedApiModel
         IReadOnlyList<HandleApiClassSpec> handleApiClasses,
         PeerConnectionAsyncSpec? peerConnectionAsync,
         IReadOnlyList<CustomClassSectionSpec> customSections,
+        IReadOnlyList<AutoManagedSourceSpec> autoSources,
         ManagedApiOutputHints outputHints)
     {
         NamespaceName = namespaceName;
@@ -1351,6 +1380,7 @@ internal sealed class ManagedApiModel
         HandleApiClasses = handleApiClasses;
         PeerConnectionAsync = peerConnectionAsync;
         CustomSections = customSections;
+        AutoSources = autoSources;
         OutputHints = outputHints;
     }
 
@@ -1366,7 +1396,25 @@ internal sealed class ManagedApiModel
 
     public IReadOnlyList<CustomClassSectionSpec> CustomSections { get; }
 
+    public IReadOnlyList<AutoManagedSourceSpec> AutoSources { get; }
+
     public ManagedApiOutputHints OutputHints { get; }
+}
+
+internal sealed class AutoManagedSourceSpec
+{
+    public AutoManagedSourceSpec(string sectionName, string defaultHint, string sourceText)
+    {
+        SectionName = sectionName;
+        DefaultHint = defaultHint;
+        SourceText = sourceText;
+    }
+
+    public string SectionName { get; }
+
+    public string DefaultHint { get; }
+
+    public string SourceText { get; }
 }
 
 internal sealed class AutoAbiSurfaceSpec
@@ -1399,6 +1447,33 @@ internal sealed class AutoAbiSurfaceSpec
             sectionSuffix: "_abi_surface",
             includeDeprecated: false);
     }
+}
+
+internal sealed class AutoAbiMethodSpec
+{
+    public AutoAbiMethodSpec(
+        string methodName,
+        string returnType,
+        IReadOnlyList<string> parameterSignatures,
+        IReadOnlyList<string> invocationArguments,
+        string nativeFunctionName)
+    {
+        MethodName = methodName;
+        ReturnType = returnType;
+        ParameterSignatures = parameterSignatures;
+        InvocationArguments = invocationArguments;
+        NativeFunctionName = nativeFunctionName;
+    }
+
+    public string MethodName { get; }
+
+    public string ReturnType { get; }
+
+    public IReadOnlyList<string> ParameterSignatures { get; }
+
+    public IReadOnlyList<string> InvocationArguments { get; }
+
+    public string NativeFunctionName { get; }
 }
 
 internal sealed class ManagedApiOutputHints

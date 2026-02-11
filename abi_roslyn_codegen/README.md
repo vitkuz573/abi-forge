@@ -45,6 +45,8 @@ during compilation.
 
 `managed_api.auto_abi_surface` can auto-generate low-level ABI forwarding methods for each
 managed handle class directly from IDL function signatures.
+The generated methods live in dedicated internal extension-surface classes
+(`{HandleClass}{SectionSuffixPascal}`), so user-facing handle classes stay clean.
 
 - `enabled`: toggles auto-surface generation.
 - `method_prefix`: prefix for generated methods (default: `Abi`).
