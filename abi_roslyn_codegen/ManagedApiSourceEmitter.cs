@@ -87,6 +87,7 @@ internal static class ManagedApiSourceEmitter
     public static ManagedApiModel ParseManagedApiMetadata(
         string text,
         IdlModel idlModel,
+        IdlTypeModel idlTypeModel,
         ManagedHandlesModel handlesModel)
     {
         JsonDocument document;
@@ -125,7 +126,12 @@ internal static class ManagedApiSourceEmitter
             var peerConnectionAsync = ParsePeerConnectionAsync(root);
             var customSections = ParseCustomSections(root);
             var autoAbiSurface = ParseAutoAbiSurface(root);
-            var autoSources = BuildAutoAbiSurfaceSources(autoAbiSurface, idlModel, handlesModel, namespaceName);
+            var autoSources = BuildAutoAbiSurfaceSources(
+                autoAbiSurface,
+                idlModel,
+                idlTypeModel,
+                handlesModel,
+                namespaceName);
             var outputHints = ParseOutputHints(root, "managed_api");
 
             return new ManagedApiModel(
@@ -629,10 +635,21 @@ internal static class ManagedApiSourceEmitter
         var enabled = ReadOptionalBool(autoElement, "enabled", true);
         var methodPrefix = ReadOptionalString(autoElement, "method_prefix", "Abi");
         var sectionSuffix = ReadOptionalString(autoElement, "section_suffix", "_abi_surface");
+        var globalSection = ReadOptionalString(autoElement, "global_section", "global");
+        var globalClass = ReadOptionalString(autoElement, "global_class", "Global");
         var includeDeprecated = ReadOptionalBool(autoElement, "include_deprecated", false);
+        var coverage = ParseAutoAbiCoverage(autoElement);
         var publicFacade = ParseAutoAbiPublicFacade(autoElement);
 
-        return new AutoAbiSurfaceSpec(enabled, methodPrefix, sectionSuffix, includeDeprecated, publicFacade);
+        return new AutoAbiSurfaceSpec(
+            enabled,
+            methodPrefix,
+            sectionSuffix,
+            globalSection,
+            globalClass,
+            includeDeprecated,
+            publicFacade,
+            coverage);
     }
 
     private static AutoAbiPublicFacadeSpec ParseAutoAbiPublicFacade(JsonElement autoElement)
@@ -654,18 +671,109 @@ internal static class ManagedApiSourceEmitter
         var typedMethodPrefix = ReadOptionalString(publicFacadeElement, "typed_method_prefix", "Typed");
         var sectionSuffix = ReadOptionalString(publicFacadeElement, "section_suffix", "_abi_facade");
         var allowIntPtr = ReadOptionalBool(publicFacadeElement, "allow_int_ptr", false);
+        var safeFacade = ParseAutoAbiSafeFacade(publicFacadeElement);
         return new AutoAbiPublicFacadeSpec(
             enabled,
             classSuffix,
             methodPrefix,
             typedMethodPrefix,
             sectionSuffix,
-            allowIntPtr);
+            allowIntPtr,
+            safeFacade);
+    }
+
+    private static AutoAbiSafeFacadeSpec ParseAutoAbiSafeFacade(JsonElement publicFacadeElement)
+    {
+        if (!publicFacadeElement.TryGetProperty("safe_facade", out var safeElement) ||
+            safeElement.ValueKind == JsonValueKind.Null)
+        {
+            return AutoAbiSafeFacadeSpec.Default();
+        }
+
+        if (safeElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new GeneratorException("managed_api.auto_abi_surface.public_facade.safe_facade must be an object when present.");
+        }
+
+        var enabled = ReadOptionalBool(safeElement, "enabled", true);
+        var classSuffix = ReadOptionalString(safeElement, "class_suffix", "_abi_safe");
+        var methodPrefix = ReadOptionalString(safeElement, "method_prefix", string.Empty);
+        var tryMethodPrefix = ReadOptionalString(safeElement, "try_method_prefix", "Try");
+        var asyncMethodSuffix = ReadOptionalString(safeElement, "async_method_suffix", "Async");
+        var sectionSuffix = ReadOptionalString(safeElement, "section_suffix", "_abi_safe");
+        var exceptionType = ReadOptionalString(
+            safeElement,
+            "exception_type",
+            "global::System.InvalidOperationException");
+        return new AutoAbiSafeFacadeSpec(
+            enabled,
+            classSuffix,
+            methodPrefix,
+            tryMethodPrefix,
+            asyncMethodSuffix,
+            sectionSuffix,
+            exceptionType);
+    }
+
+    private static AutoAbiCoverageSpec ParseAutoAbiCoverage(JsonElement autoElement)
+    {
+        if (!autoElement.TryGetProperty("coverage", out var coverageElement) ||
+            coverageElement.ValueKind == JsonValueKind.Null)
+        {
+            return AutoAbiCoverageSpec.Default();
+        }
+
+        if (coverageElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new GeneratorException("managed_api.auto_abi_surface.coverage must be an object when present.");
+        }
+
+        var strict = ReadOptionalBool(coverageElement, "strict", true);
+        var waivers = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (coverageElement.TryGetProperty("waived_functions", out var waivedFunctionsElement) &&
+            waivedFunctionsElement.ValueKind != JsonValueKind.Null)
+        {
+            if (waivedFunctionsElement.ValueKind != JsonValueKind.Array)
+            {
+                throw new GeneratorException("managed_api.auto_abi_surface.coverage.waived_functions must be an array when present.");
+            }
+
+            var index = 0;
+            foreach (var item in waivedFunctionsElement.EnumerateArray())
+            {
+                var context = $"managed_api.auto_abi_surface.coverage.waived_functions[{index}]";
+                if (item.ValueKind == JsonValueKind.String)
+                {
+                    var functionName = item.GetString();
+                    if (string.IsNullOrWhiteSpace(functionName))
+                    {
+                        throw new GeneratorException(context + " must be a non-empty string.");
+                    }
+
+                    waivers[functionName!] = "waived";
+                }
+                else if (item.ValueKind == JsonValueKind.Object)
+                {
+                    var functionName = ReadRequiredString(item, "name", context);
+                    var reason = ReadOptionalString(item, "reason", "waived");
+                    waivers[functionName] = reason;
+                }
+                else
+                {
+                    throw new GeneratorException(context + " must be a string or object.");
+                }
+
+                index++;
+            }
+        }
+
+        return new AutoAbiCoverageSpec(strict, waivers);
     }
 
     private static IReadOnlyList<AutoManagedSourceSpec> BuildAutoAbiSurfaceSources(
         AutoAbiSurfaceSpec spec,
         IdlModel idlModel,
+        IdlTypeModel idlTypeModel,
         ManagedHandlesModel handlesModel,
         string namespaceName)
     {
@@ -681,51 +789,171 @@ internal static class ManagedApiSourceEmitter
             .OrderBy(item => item.CsType, StringComparer.Ordinal)
             .ToArray();
         var handleTypeByCTypeKey = BuildHandleTypeByCTypeKey(handles);
+        var handleByCTypeKey = BuildHandleByCTypeKey(handles);
         var publicHandleTypeNames = new HashSet<string>(
             handles.Select(static item => item.CsType),
             StringComparer.Ordinal);
+        var handleReleaseMethods = new HashSet<string>(
+            handles
+                .Where(static item => !string.IsNullOrWhiteSpace(item.ReleaseMethod))
+                .Select(static item => item.ReleaseMethod),
+            StringComparer.Ordinal);
+        var ownerByKey = BuildHandleOwnerSpecs(handles);
+        var globalOwner = new AutoAbiOwnerSpec(
+            ownerKey: "__global__",
+            sectionStem: spec.GlobalSection,
+            classStem: spec.GlobalClass,
+            ownerTypeName: null,
+            handle: null);
+        ownerByKey[globalOwner.OwnerKey] = globalOwner;
+        var methodsByOwnerKey = new Dictionary<string, List<AutoAbiMethodSpec>>(StringComparer.Ordinal);
+        var usedNamesByOwner = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var classifiedFunctions = new HashSet<string>(StringComparer.Ordinal);
+        var unclassifiedFunctions = new List<string>();
+        var methodPrefix = string.IsNullOrWhiteSpace(spec.MethodPrefix) ? "Abi" : spec.MethodPrefix;
 
-        foreach (var handle in handles)
+        foreach (var function in idlModel.Functions.OrderBy(item => item.Name, StringComparer.Ordinal))
         {
-            var methods = BuildHandleAbiMethods(spec, idlModel, handle);
-            if (methods.Count == 0)
+            if (!spec.IncludeDeprecated && function.Deprecated)
+            {
+                classifiedFunctions.Add(function.Name);
+                continue;
+            }
+
+            if (handleReleaseMethods.Contains(function.Name))
+            {
+                classifiedFunctions.Add(function.Name);
+                continue;
+            }
+
+            if (function.Parameters.Any(parameter => parameter.Variadic))
+            {
+                if (!spec.Coverage.IsWaived(function.Name))
+                {
+                    unclassifiedFunctions.Add(function.Name);
+                }
+
+                continue;
+            }
+
+            var owner = globalOwner;
+            var ownerParameterOffset = 0;
+            if (function.Parameters.Count > 0)
+            {
+                var firstParameterType = ParseCTypeInfo(function.Parameters[0].CType);
+                var firstParameterKey = BuildCTypeKey(firstParameterType.BaseType, firstParameterType.PointerDepth);
+                if (handleByCTypeKey.TryGetValue(firstParameterKey, out var matchedOwner))
+                {
+                    owner = matchedOwner;
+                    ownerParameterOffset = 1;
+                }
+            }
+
+            if (!usedNamesByOwner.TryGetValue(owner.OwnerKey, out var usedNames))
+            {
+                usedNames = new HashSet<string>(StringComparer.Ordinal);
+                usedNamesByOwner[owner.OwnerKey] = usedNames;
+            }
+
+            var ownerStem = owner.Handle == null
+                ? string.Empty
+                : BuildHandleStem(ParseCTypeInfo(owner.Handle.CHandleType).BaseType);
+            var method = BuildAbiForwardMethod(
+                function,
+                idlModel,
+                idlTypeModel,
+                handleTypeByCTypeKey,
+                ownerStem,
+                methodPrefix,
+                ownerParameterOffset,
+                usedNames);
+            if (method == null)
+            {
+                if (!spec.Coverage.IsWaived(function.Name))
+                {
+                    unclassifiedFunctions.Add(function.Name);
+                }
+
+                continue;
+            }
+
+            if (!methodsByOwnerKey.TryGetValue(owner.OwnerKey, out var methods))
+            {
+                methods = new List<AutoAbiMethodSpec>();
+                methodsByOwnerKey[owner.OwnerKey] = methods;
+            }
+
+            methods.Add(method);
+            classifiedFunctions.Add(function.Name);
+        }
+
+        ValidateAutoAbiCoverage(spec, idlModel, classifiedFunctions, unclassifiedFunctions);
+
+        foreach (var owner in ownerByKey.Values.OrderBy(item => item.SectionStem, StringComparer.Ordinal))
+        {
+            if (!methodsByOwnerKey.TryGetValue(owner.OwnerKey, out var methods) || methods.Count == 0)
             {
                 continue;
             }
 
-            var internalSectionName = handle.CsType + spec.SectionSuffix;
+            var internalSectionName = owner.SectionStem + spec.SectionSuffix;
             var internalSurfaceClassName = BuildAutoSurfaceClassName(
-                handle.CsType,
+                owner.ClassStem,
                 spec.SectionSuffix,
                 "AbiSurface");
             var internalSourceText = RenderAutoAbiSurfaceCode(
                 namespaceName,
                 internalSurfaceClassName,
-                handle,
+                owner,
                 methods);
             AddAutoSource(sources, knownSections, internalSectionName, internalSourceText);
 
-            if (spec.PublicFacade.Enabled)
+            if (!spec.PublicFacade.Enabled)
             {
-                var facadeMethods = BuildPublicFacadeMethods(
-                    spec,
-                    methods,
-                    publicHandleTypeNames,
-                    handleTypeByCTypeKey);
-                if (facadeMethods.Count > 0)
+                continue;
+            }
+
+            var facadeMethods = BuildPublicFacadeMethods(
+                spec,
+                methods,
+                publicHandleTypeNames,
+                handleTypeByCTypeKey,
+                owner.IsHandleOwner);
+            if (facadeMethods.Count > 0)
+            {
+                var facadeSectionName = owner.SectionStem + spec.PublicFacade.SectionSuffix;
+                var facadeClassName = BuildAutoSurfaceClassName(
+                    owner.ClassStem,
+                    spec.PublicFacade.ClassSuffix,
+                    "AbiFacade");
+                var facadeSourceText = RenderAutoAbiFacadeCode(
+                    namespaceName,
+                    facadeClassName,
+                    internalSurfaceClassName,
+                    owner,
+                    facadeMethods);
+                AddAutoSource(sources, knownSections, facadeSectionName, facadeSourceText);
+
+                if (spec.PublicFacade.SafeFacade.Enabled)
                 {
-                    var facadeSectionName = handle.CsType + spec.PublicFacade.SectionSuffix;
-                    var facadeClassName = BuildAutoSurfaceClassName(
-                        handle.CsType,
-                        spec.PublicFacade.ClassSuffix,
-                        "AbiFacade");
-                    var facadeSourceText = RenderAutoAbiFacadeCode(
+                    var safeSectionName = owner.SectionStem + spec.PublicFacade.SafeFacade.SectionSuffix;
+                    var safeClassName = BuildAutoSurfaceClassName(
+                        owner.ClassStem,
+                        spec.PublicFacade.SafeFacade.ClassSuffix,
+                        "AbiSafe");
+                    var safeSourceText = RenderAutoAbiSafeFacadeCode(
                         namespaceName,
+                        safeClassName,
                         facadeClassName,
-                        internalSurfaceClassName,
-                        handle,
-                        facadeMethods);
-                    AddAutoSource(sources, knownSections, facadeSectionName, facadeSourceText);
+                        owner,
+                        methods,
+                        facadeMethods,
+                        spec.PublicFacade,
+                        publicHandleTypeNames);
+                    if (!string.IsNullOrWhiteSpace(safeSourceText))
+                    {
+                        AddAutoSource(sources, knownSections, safeSectionName, safeSourceText);
+                    }
                 }
             }
         }
@@ -772,71 +1000,69 @@ internal static class ManagedApiSourceEmitter
         return result;
     }
 
-    private static IReadOnlyList<AutoAbiMethodSpec> BuildHandleAbiMethods(
-        AutoAbiSurfaceSpec spec,
-        IdlModel idlModel,
-        ManagedHandleSpec handle)
+    private static IReadOnlyDictionary<string, AutoAbiOwnerSpec> BuildHandleByCTypeKey(
+        IEnumerable<ManagedHandleSpec> handles)
     {
-        if (string.IsNullOrWhiteSpace(handle.CHandleType))
+        var result = new Dictionary<string, AutoAbiOwnerSpec>(StringComparer.Ordinal);
+        foreach (var handle in handles)
         {
-            return Array.Empty<AutoAbiMethodSpec>();
+            if (string.IsNullOrWhiteSpace(handle.CHandleType))
+            {
+                continue;
+            }
+
+            var cTypeInfo = ParseCTypeInfo(handle.CHandleType);
+            if (cTypeInfo.PointerDepth <= 0)
+            {
+                continue;
+            }
+
+            var key = BuildCTypeKey(cTypeInfo.BaseType, cTypeInfo.PointerDepth);
+            result[key] = new AutoAbiOwnerSpec(
+                ownerKey: handle.CsType,
+                sectionStem: handle.CsType,
+                classStem: handle.CsType,
+                ownerTypeName: handle.CsType,
+                handle: handle);
         }
 
-        var methodPrefix = string.IsNullOrWhiteSpace(spec.MethodPrefix) ? "Abi" : spec.MethodPrefix;
-        var usedNames = new HashSet<string>(StringComparer.Ordinal);
-        var methods = new List<AutoAbiMethodSpec>();
-        var handleType = ParseCTypeInfo(handle.CHandleType);
-        var handleStem = BuildHandleStem(handleType.BaseType);
-
-        foreach (var function in idlModel.Functions.OrderBy(item => item.Name, StringComparer.Ordinal))
-        {
-            if (!spec.IncludeDeprecated && function.Deprecated)
-            {
-                continue;
-            }
-
-            if (string.Equals(function.Name, handle.ReleaseMethod, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (function.Parameters.Count == 0 || function.Parameters.Any(parameter => parameter.Variadic))
-            {
-                continue;
-            }
-
-            var firstParameter = function.Parameters[0];
-            if (!CTypeMatchesHandle(firstParameter.CType, handleType))
-            {
-                continue;
-            }
-
-            var method = BuildHandleAbiForwardMethod(function, idlModel, handleStem, methodPrefix, usedNames);
-            if (method != null)
-            {
-                methods.Add(method);
-            }
-        }
-
-        return methods;
+        return result;
     }
 
-    private static AutoAbiMethodSpec? BuildHandleAbiForwardMethod(
+    private static Dictionary<string, AutoAbiOwnerSpec> BuildHandleOwnerSpecs(IEnumerable<ManagedHandleSpec> handles)
+    {
+        var result = new Dictionary<string, AutoAbiOwnerSpec>(StringComparer.Ordinal);
+        foreach (var handle in handles)
+        {
+            result[handle.CsType] = new AutoAbiOwnerSpec(
+                ownerKey: handle.CsType,
+                sectionStem: handle.CsType,
+                classStem: handle.CsType,
+                ownerTypeName: handle.CsType,
+                handle: handle);
+        }
+
+        return result;
+    }
+
+    private static AutoAbiMethodSpec? BuildAbiForwardMethod(
         FunctionSpec function,
         IdlModel idlModel,
-        string handleStem,
+        IdlTypeModel idlTypeModel,
+        IReadOnlyDictionary<string, string> handleTypeByCTypeKey,
+        string ownerStem,
         string methodPrefix,
+        int ownerParameterOffset,
         HashSet<string> usedNames)
     {
-        var methodStem = DeriveFunctionStem(function.Name, handleStem);
+        var methodStem = DeriveFunctionStem(function.Name, ownerStem);
         var methodName = EnsureUniqueMethodName(
             BuildPascalIdentifier(methodPrefix + "_" + methodStem, "AbiCall"),
             usedNames);
 
         var parameters = new List<AutoAbiParameterSpec>();
-        var invocationArguments = new List<string> { "owner.DangerousGetHandle()" };
-
-        for (var index = 1; index < function.Parameters.Count; index++)
+        var invocationArguments = new List<string>();
+        for (var index = ownerParameterOffset; index < function.Parameters.Count; index++)
         {
             var parameter = function.Parameters[index];
             var mapped = MapManagedParameter(function, parameter, idlModel);
@@ -846,20 +1072,414 @@ internal static class ManagedApiSourceEmitter
         }
 
         var returnType = MapManagedType(function.CReturnType, idlModel);
+        var asyncSpec = TryBuildAsyncSpec(
+            function,
+            idlModel,
+            idlTypeModel,
+            handleTypeByCTypeKey,
+            ownerParameterOffset);
         return new AutoAbiMethodSpec(
             methodName,
+            methodStem,
             returnType,
             function.CReturnType,
             parameters,
             invocationArguments,
-            function.Name);
+            function.Name,
+            IsStatusLikeFunction(function, ownerParameterOffset),
+            asyncSpec);
+    }
+
+    private static AutoAbiAsyncSpec? TryBuildAsyncSpec(
+        FunctionSpec function,
+        IdlModel idlModel,
+        IdlTypeModel idlTypeModel,
+        IReadOnlyDictionary<string, string> handleTypeByCTypeKey,
+        int ownerParameterOffset)
+    {
+        var callbackIndices = new List<int>();
+        for (var i = ownerParameterOffset; i < function.Parameters.Count; i++)
+        {
+            var parameter = function.Parameters[i];
+            var info = ParseCTypeInfo(parameter.CType);
+            if (info.PointerDepth == 0 &&
+                info.BaseType.EndsWith("_cb", StringComparison.Ordinal))
+            {
+                callbackIndices.Add(i);
+            }
+        }
+
+        if (callbackIndices.Count < 2)
+        {
+            return null;
+        }
+
+        var successIndex = -1;
+        foreach (var index in callbackIndices)
+        {
+            if (function.Parameters[index].Name.IndexOf("success", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                successIndex = index;
+                break;
+            }
+        }
+
+        if (successIndex < 0)
+        {
+            successIndex = callbackIndices[0];
+        }
+
+        var failureIndex = -1;
+        foreach (var index in callbackIndices)
+        {
+            if (index == successIndex)
+            {
+                continue;
+            }
+
+            var parameterName = function.Parameters[index].Name;
+            if (parameterName.IndexOf("failure", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                parameterName.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                failureIndex = index;
+                break;
+            }
+        }
+
+        if (failureIndex < 0 || failureIndex == successIndex)
+        {
+            failureIndex = -1;
+            foreach (var index in callbackIndices)
+            {
+                if (index != successIndex)
+                {
+                    failureIndex = index;
+                    break;
+                }
+            }
+
+            if (failureIndex < 0 || failureIndex == successIndex)
+            {
+                return null;
+            }
+        }
+
+        var userDataIndex = -1;
+        for (var index = ownerParameterOffset; index < function.Parameters.Count; index++)
+        {
+            if (index == successIndex || index == failureIndex)
+            {
+                continue;
+            }
+
+            var parameter = function.Parameters[index];
+            var parameterType = ParseCTypeInfo(parameter.CType);
+            if (parameterType.PointerDepth == 1 &&
+                string.Equals(parameterType.BaseType, "void", StringComparison.Ordinal))
+            {
+                userDataIndex = index;
+                if (parameter.Name.IndexOf("user_data", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (userDataIndex < 0)
+        {
+            return null;
+        }
+
+        var successParameter = function.Parameters[successIndex];
+        var failureParameter = function.Parameters[failureIndex];
+        var successDelegateType = MapManagedType(successParameter.CType, idlModel);
+        var failureDelegateType = MapManagedType(failureParameter.CType, idlModel);
+        if (!idlTypeModel.CallbackTypedefs.TryGetValue(successDelegateType, out var successDelegateSpec))
+        {
+            return null;
+        }
+
+        if (!idlTypeModel.CallbackTypedefs.TryGetValue(failureDelegateType, out var failureDelegateSpec))
+        {
+            return null;
+        }
+
+        if (successDelegateSpec.Parameters.Count == 0 || failureDelegateSpec.Parameters.Count == 0)
+        {
+            return null;
+        }
+
+        var exposedParameters = new List<AutoAbiParameterSpec>();
+        var invocationArgumentsByIndex = new Dictionary<int, string>();
+        for (var index = ownerParameterOffset; index < function.Parameters.Count; index++)
+        {
+            if (index == successIndex || index == failureIndex || index == userDataIndex)
+            {
+                continue;
+            }
+
+            var parameter = function.Parameters[index];
+            var mapped = MapManagedParameter(function, parameter, idlModel);
+            var parameterName = SanitizeParameterName(parameter.Name, "arg" + index);
+            exposedParameters.Add(new AutoAbiParameterSpec(parameterName, mapped.TypeName, mapped.Modifier, parameter.CType));
+            invocationArgumentsByIndex[index] = BuildInvocationArgument(mapped.Modifier, parameterName);
+        }
+
+        var invocationArguments = new List<string>();
+        for (var index = ownerParameterOffset; index < function.Parameters.Count; index++)
+        {
+            if (index == successIndex)
+            {
+                invocationArguments.Add("success");
+                continue;
+            }
+
+            if (index == failureIndex)
+            {
+                invocationArguments.Add("failure");
+                continue;
+            }
+
+            if (index == userDataIndex)
+            {
+                invocationArguments.Add("userData");
+                continue;
+            }
+
+            if (!invocationArgumentsByIndex.TryGetValue(index, out var argument))
+            {
+                return null;
+            }
+
+            invocationArguments.Add(argument);
+        }
+
+        var successLambdaParameters = BuildCallbackLambdaParameterNames(successDelegateSpec, "successArg");
+        var failureLambdaParameters = BuildCallbackLambdaParameterNames(failureDelegateSpec, "failureArg");
+        if (successLambdaParameters.Count != successDelegateSpec.Parameters.Count ||
+            failureLambdaParameters.Count != failureDelegateSpec.Parameters.Count)
+        {
+            return null;
+        }
+
+        var successValues = new List<AutoAbiConvertedValueSpec>();
+        for (var index = 1; index < successDelegateSpec.Parameters.Count; index++)
+        {
+            var callbackParameter = successDelegateSpec.Parameters[index];
+            var callbackParameterName = successLambdaParameters[index];
+            successValues.Add(ConvertCallbackValue(callbackParameter.CType, callbackParameterName, idlModel, handleTypeByCTypeKey));
+        }
+
+        var publicReturnType = "Task";
+        var taskResultType = "bool";
+        var successSetResultExpression = "true";
+        if (successValues.Count == 1)
+        {
+            publicReturnType = $"Task<{successValues[0].TypeName}>";
+            taskResultType = successValues[0].TypeName;
+            successSetResultExpression = successValues[0].Expression;
+        }
+        else if (successValues.Count > 1)
+        {
+            var tupleType = "(" + string.Join(", ", successValues.Select(item => item.TypeName)) + ")";
+            var tupleExpression = "(" + string.Join(", ", successValues.Select(item => item.Expression)) + ")";
+            publicReturnType = $"Task<{tupleType}>";
+            taskResultType = tupleType;
+            successSetResultExpression = tupleExpression;
+        }
+
+        var failureMessageExpression = "\"Native callback reported failure.\"";
+        if (failureDelegateSpec.Parameters.Count > 1)
+        {
+            var converted = ConvertCallbackValue(
+                failureDelegateSpec.Parameters[1].CType,
+                failureLambdaParameters[1],
+                idlModel,
+                handleTypeByCTypeKey);
+            if (string.Equals(converted.TypeName, "string", StringComparison.Ordinal))
+            {
+                failureMessageExpression = converted.Expression;
+            }
+            else
+            {
+                failureMessageExpression =
+                    $"global::System.Convert.ToString({converted.Expression}) ?? \"Native callback reported failure.\"";
+            }
+        }
+
+        return new AutoAbiAsyncSpec(
+            exposedParameters,
+            invocationArguments,
+            publicReturnType,
+            taskResultType,
+            successDelegateType,
+            failureDelegateType,
+            successLambdaParameters,
+            failureLambdaParameters,
+            successLambdaParameters[0],
+            failureLambdaParameters[0],
+            successSetResultExpression,
+            failureMessageExpression);
+    }
+
+    private static IReadOnlyList<string> BuildCallbackLambdaParameterNames(DelegateSpec delegateSpec, string fallbackPrefix)
+    {
+        var result = new List<string>(delegateSpec.Parameters.Count);
+        var usedNames = new HashSet<string>(StringComparer.Ordinal);
+        for (var index = 0; index < delegateSpec.Parameters.Count; index++)
+        {
+            var parameter = delegateSpec.Parameters[index];
+            var fallback = fallbackPrefix + index.ToString();
+            var name = SanitizeParameterName(parameter.Name, fallback);
+            name = EnsureUniqueMethodName(name, usedNames);
+            result.Add(name);
+        }
+
+        return result;
+    }
+
+    private static AutoAbiConvertedValueSpec ConvertCallbackValue(
+        string cType,
+        string parameterName,
+        IdlModel idlModel,
+        IReadOnlyDictionary<string, string> handleTypeByCTypeKey)
+    {
+        var handleType = ResolveHandleTypeByCType(cType, handleTypeByCTypeKey);
+        if (!string.IsNullOrWhiteSpace(handleType))
+        {
+            return new AutoAbiConvertedValueSpec(
+                handleType + "?",
+                $"{parameterName} == IntPtr.Zero ? null : new {handleType}({parameterName})");
+        }
+
+        if (IsCStringPointer(cType))
+        {
+            return new AutoAbiConvertedValueSpec("string", $"Utf8String.Read({parameterName})");
+        }
+
+        var mappedType = MapManagedType(cType, idlModel);
+        return new AutoAbiConvertedValueSpec(mappedType, parameterName);
+    }
+
+    private static bool IsCStringPointer(string cType)
+    {
+        var info = ParseCTypeInfo(cType);
+        return info.PointerDepth == 1 &&
+            string.Equals(info.BaseType, "char", StringComparison.Ordinal);
+    }
+
+    private static bool IsStatusLikeFunction(FunctionSpec function, int ownerParameterOffset)
+    {
+        var returnType = StripCTypeQualifiers(function.CReturnType);
+        if (string.Equals(returnType, "lrtc_result_t", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (!string.Equals(returnType, "int", StringComparison.Ordinal) &&
+            !string.Equals(returnType, "int32_t", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var functionName = function.Name;
+        if (functionName.Contains("_set_", StringComparison.Ordinal) ||
+            functionName.Contains("_add_", StringComparison.Ordinal) ||
+            functionName.Contains("_remove_", StringComparison.Ordinal) ||
+            functionName.Contains("_replace_", StringComparison.Ordinal) ||
+            functionName.Contains("_update", StringComparison.Ordinal) ||
+            functionName.Contains("_initialize", StringComparison.Ordinal) ||
+            functionName.Contains("_insert", StringComparison.Ordinal) ||
+            functionName.Contains("_send", StringComparison.Ordinal) ||
+            functionName.EndsWith("_stop", StringComparison.Ordinal) ||
+            functionName.EndsWith("_copy_i420", StringComparison.Ordinal) ||
+            functionName.EndsWith("_to_argb", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        for (var index = ownerParameterOffset; index < function.Parameters.Count; index++)
+        {
+            var parameter = function.Parameters[index];
+            var info = ParseCTypeInfo(parameter.CType);
+            var rawParameterType = parameter.CType.TrimStart();
+            var isConstPointer = rawParameterType.StartsWith("const ", StringComparison.Ordinal);
+            if (info.PointerDepth == 1 &&
+                !isConstPointer)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void ValidateAutoAbiCoverage(
+        AutoAbiSurfaceSpec spec,
+        IdlModel idlModel,
+        IReadOnlyCollection<string> classifiedFunctions,
+        IReadOnlyCollection<string> unclassifiedFunctions)
+    {
+        var knownFunctions = new HashSet<string>(
+            idlModel.Functions.Select(static function => function.Name),
+            StringComparer.Ordinal);
+        var unknownWaivers = spec.Coverage.WaivedFunctions.Keys
+            .Where(name => !knownFunctions.Contains(name))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        if (unknownWaivers.Length > 0)
+        {
+            throw new GeneratorException(
+                "managed_api.auto_abi_surface.coverage.waived_functions contains unknown functions: " +
+                string.Join(", ", unknownWaivers));
+        }
+
+        if (!spec.Coverage.Strict)
+        {
+            return;
+        }
+
+        var missing = new List<string>();
+        foreach (var function in idlModel.Functions)
+        {
+            if (!spec.IncludeDeprecated && function.Deprecated)
+            {
+                continue;
+            }
+
+            if (classifiedFunctions.Contains(function.Name) || spec.Coverage.IsWaived(function.Name))
+            {
+                continue;
+            }
+
+            missing.Add(function.Name);
+        }
+
+        if (unclassifiedFunctions.Count > 0)
+        {
+            missing.AddRange(unclassifiedFunctions.Where(name => !spec.Coverage.IsWaived(name)));
+        }
+
+        var uniqueMissing = missing
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        if (uniqueMissing.Length == 0)
+        {
+            return;
+        }
+
+        throw new GeneratorException(
+            "managed_api.auto_abi_surface coverage is incomplete. " +
+            "Unclassified ABI functions: " + string.Join(", ", uniqueMissing));
     }
 
     private static IReadOnlyList<AutoAbiFacadeMethodSpec> BuildPublicFacadeMethods(
         AutoAbiSurfaceSpec spec,
         IReadOnlyList<AutoAbiMethodSpec> methods,
         HashSet<string> publicHandleTypeNames,
-        IReadOnlyDictionary<string, string> handleTypeByCTypeKey)
+        IReadOnlyDictionary<string, string> handleTypeByCTypeKey,
+        bool allowHandleReturnConversion)
     {
         var result = new List<AutoAbiFacadeMethodSpec>();
         var usedNames = new HashSet<string>(StringComparer.Ordinal);
@@ -882,7 +1502,10 @@ internal static class ManagedApiSourceEmitter
                         .ToArray(),
                     innerMethodName: method.MethodName,
                     nativeFunctionName: method.NativeFunctionName,
-                    handleReturnType: null));
+                    handleReturnType: null,
+                    methodStem: method.MethodStem,
+                    isTyped: false,
+                    isStatusLike: method.IsStatusLike));
             }
 
             if (!spec.PublicFacade.Enabled)
@@ -895,6 +1518,7 @@ internal static class ManagedApiSourceEmitter
                 spec,
                 publicHandleTypeNames,
                 handleTypeByCTypeKey,
+                allowHandleReturnConversion,
                 usedNames);
             if (typedMethod != null)
             {
@@ -910,6 +1534,7 @@ internal static class ManagedApiSourceEmitter
         AutoAbiSurfaceSpec spec,
         HashSet<string> publicHandleTypeNames,
         IReadOnlyDictionary<string, string> handleTypeByCTypeKey,
+        bool allowHandleReturnConversion,
         HashSet<string> usedNames)
     {
         var convertedParameters = new List<AutoAbiParameterSpec>(method.Parameters.Count);
@@ -940,7 +1565,9 @@ internal static class ManagedApiSourceEmitter
         string? handleReturnType = null;
         var typedReturnType = method.ReturnType;
         var typedReturnHandleName = ResolveHandleTypeByCType(method.ReturnCType, handleTypeByCTypeKey);
-        if (!string.IsNullOrWhiteSpace(typedReturnHandleName) && IsPointerLikeType(method.ReturnType))
+        if (allowHandleReturnConversion &&
+            !string.IsNullOrWhiteSpace(typedReturnHandleName) &&
+            IsPointerLikeType(method.ReturnType))
         {
             typedReturnType = typedReturnHandleName + "?";
             handleReturnType = typedReturnHandleName;
@@ -978,7 +1605,10 @@ internal static class ManagedApiSourceEmitter
             forwardedArguments: forwardedArguments,
             innerMethodName: method.MethodName,
             nativeFunctionName: method.NativeFunctionName,
-            handleReturnType: handleReturnType);
+            handleReturnType: handleReturnType,
+            methodStem: method.MethodStem,
+            isTyped: true,
+            isStatusLike: method.IsStatusLike);
     }
 
     private static bool IsRawPublicFacadeSignatureAllowed(
@@ -1074,6 +1704,45 @@ internal static class ManagedApiSourceEmitter
         return false;
     }
 
+    private static bool IsPublicTaskTypeAllowed(
+        string typeName,
+        AutoAbiPublicFacadeSpec facadeSpec,
+        HashSet<string> publicHandleTypeNames)
+    {
+        var normalized = typeName.Trim();
+        if (string.Equals(normalized, "Task", StringComparison.Ordinal) ||
+            string.Equals(normalized, "global::System.Threading.Tasks.Task", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var taskPrefix = "Task<";
+        if (!normalized.StartsWith(taskPrefix, StringComparison.Ordinal) ||
+            !normalized.EndsWith(">", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var inner = normalized.Substring(taskPrefix.Length, normalized.Length - taskPrefix.Length - 1).Trim();
+        if (inner.StartsWith("(", StringComparison.Ordinal) &&
+            inner.EndsWith(")", StringComparison.Ordinal))
+        {
+            var tupleInner = inner.Substring(1, inner.Length - 2);
+            var parts = tupleInner.Split(',');
+            foreach (var part in parts)
+            {
+                if (!IsPublicTypeAllowed(part.Trim(), facadeSpec, publicHandleTypeNames))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        return IsPublicTypeAllowed(inner, facadeSpec, publicHandleTypeNames);
+    }
+
     private static string DerivePublicFacadeMethodName(
         string internalMethodName,
         string internalPrefix,
@@ -1110,7 +1779,7 @@ internal static class ManagedApiSourceEmitter
     private static string RenderAutoAbiSurfaceCode(
         string namespaceName,
         string surfaceClassName,
-        ManagedHandleSpec handle,
+        AutoAbiOwnerSpec owner,
         IReadOnlyList<AutoAbiMethodSpec> methods)
     {
         var builder = new StringBuilder();
@@ -1123,21 +1792,37 @@ internal static class ManagedApiSourceEmitter
             AppendLine(builder, 4, "/// <summary>");
             AppendLine(builder, 4, $"/// ABI forwarder for <c>{method.NativeFunctionName}</c>.");
             AppendLine(builder, 4, "/// </summary>");
-            var allParameters = new List<string> { $"this {handle.CsType} owner" };
+            var allParameters = new List<string>();
+            if (owner.IsHandleOwner)
+            {
+                allParameters.Add($"this {owner.OwnerTypeName} owner");
+            }
+
             allParameters.AddRange(method.Parameters.Select(BuildParameterSignature));
             AppendLine(builder, 4, $"internal static {method.ReturnType} {method.MethodName}({string.Join(", ", allParameters)})");
             AppendLine(builder, 4, "{");
-            AppendLine(builder, 8, "if (owner is null)");
-            AppendLine(builder, 8, "{");
-            AppendLine(builder, 12, "throw new global::System.ArgumentNullException(nameof(owner));");
-            AppendLine(builder, 8, "}");
+            if (owner.IsHandleOwner)
+            {
+                AppendLine(builder, 8, "if (owner is null)");
+                AppendLine(builder, 8, "{");
+                AppendLine(builder, 12, "throw new global::System.ArgumentNullException(nameof(owner));");
+                AppendLine(builder, 8, "}");
+            }
+
+            var invocationArguments = new List<string>();
+            if (owner.IsHandleOwner)
+            {
+                invocationArguments.Add("owner.DangerousGetHandle()");
+            }
+
+            invocationArguments.AddRange(method.InvocationArguments);
             if (string.Equals(method.ReturnType, "void", StringComparison.Ordinal))
             {
-                AppendLine(builder, 8, $"NativeMethods.{method.NativeFunctionName}({string.Join(", ", method.InvocationArguments)});");
+                AppendLine(builder, 8, $"NativeMethods.{method.NativeFunctionName}({string.Join(", ", invocationArguments)});");
             }
             else
             {
-                AppendLine(builder, 8, $"var result = NativeMethods.{method.NativeFunctionName}({string.Join(", ", method.InvocationArguments)});");
+                AppendLine(builder, 8, $"var result = NativeMethods.{method.NativeFunctionName}({string.Join(", ", invocationArguments)});");
                 AppendLine(builder, 8, "return result;");
             }
             AppendLine(builder, 4, "}");
@@ -1153,7 +1838,7 @@ internal static class ManagedApiSourceEmitter
         string namespaceName,
         string facadeClassName,
         string internalSurfaceClassName,
-        ManagedHandleSpec handle,
+        AutoAbiOwnerSpec owner,
         IReadOnlyList<AutoAbiFacadeMethodSpec> methods)
     {
         var builder = new StringBuilder();
@@ -1166,7 +1851,12 @@ internal static class ManagedApiSourceEmitter
             AppendLine(builder, 4, "/// <summary>");
             AppendLine(builder, 4, $"/// Public facade over <c>{method.NativeFunctionName}</c>.");
             AppendLine(builder, 4, "/// </summary>");
-            var allParameters = new List<string> { $"this {handle.CsType} owner" };
+            var allParameters = new List<string>();
+            if (owner.IsHandleOwner)
+            {
+                allParameters.Add($"this {owner.OwnerTypeName} owner");
+            }
+
             allParameters.AddRange(method.Parameters.Select(BuildParameterSignature));
             AppendLine(
                 builder,
@@ -1174,13 +1864,15 @@ internal static class ManagedApiSourceEmitter
                 $"public static {method.ReturnType} {method.PublicMethodName}({string.Join(", ", allParameters)})");
             AppendLine(builder, 4, "{");
 
-            var invocation = $"{internalSurfaceClassName}.{method.InnerMethodName}(owner";
-            if (method.ForwardedArguments.Count > 0)
+            var invocationArguments = new List<string>();
+            if (owner.IsHandleOwner)
             {
-                invocation += ", " + string.Join(", ", method.ForwardedArguments);
+                invocationArguments.Add("owner");
             }
 
-            invocation += ")";
+            invocationArguments.AddRange(method.ForwardedArguments);
+            var invocation =
+                $"{internalSurfaceClassName}.{method.InnerMethodName}({string.Join(", ", invocationArguments)})";
 
             if (string.Equals(method.ReturnType, "void", StringComparison.Ordinal))
             {
@@ -1207,6 +1899,324 @@ internal static class ManagedApiSourceEmitter
         builder.AppendLine("}");
         builder.AppendLine();
         return builder.ToString();
+    }
+
+    private static string RenderAutoAbiSafeFacadeCode(
+        string namespaceName,
+        string safeFacadeClassName,
+        string facadeClassName,
+        AutoAbiOwnerSpec owner,
+        IReadOnlyList<AutoAbiMethodSpec> methods,
+        IReadOnlyList<AutoAbiFacadeMethodSpec> facadeMethods,
+        AutoAbiPublicFacadeSpec facadeSpec,
+        HashSet<string> publicHandleTypeNames)
+    {
+        var safeSpec = facadeSpec.SafeFacade;
+        if (!safeSpec.Enabled)
+        {
+            return string.Empty;
+        }
+
+        var preferredFacadeMethods = facadeMethods
+            .GroupBy(item => item.InnerMethodName, StringComparer.Ordinal)
+            .Select(group => group.OrderByDescending(item => item.IsTyped).First())
+            .ToArray();
+
+        var statusMethods = preferredFacadeMethods
+            .Where(static method => method.IsStatusLike)
+            .Where(static method => !string.Equals(method.ReturnType, "void", StringComparison.Ordinal))
+            .ToArray();
+        var asyncMethods = methods
+            .Where(static method => method.AsyncSpec != null)
+            .Where(method => method.AsyncSpec != null &&
+                method.AsyncSpec.Parameters.All(parameter =>
+                    IsPublicTypeAllowed(parameter.TypeName, facadeSpec, publicHandleTypeNames)) &&
+                IsPublicTaskTypeAllowed(method.AsyncSpec.PublicReturnType, facadeSpec, publicHandleTypeNames))
+            .ToArray();
+
+        if (statusMethods.Length == 0 && asyncMethods.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder();
+        AppendFileHeader(builder, namespaceName);
+        builder.AppendLine($"public static class {safeFacadeClassName}");
+        builder.AppendLine("{");
+
+        var usedMethodNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var method in statusMethods)
+        {
+            var statusType = method.ReturnType;
+            var tryMethodName = EnsureUniqueMethodName(
+                BuildMethodNameFromStem(safeSpec.TryMethodPrefix, method.MethodStem, method.PublicMethodName),
+                usedMethodNames);
+            var safeMethodName = EnsureUniqueMethodName(
+                BuildMethodNameFromStem(safeSpec.MethodPrefix, method.MethodStem, method.PublicMethodName),
+                usedMethodNames);
+
+            var tryParameters = new List<string>();
+            if (owner.IsHandleOwner)
+            {
+                tryParameters.Add($"this {owner.OwnerTypeName} owner");
+            }
+
+            tryParameters.AddRange(method.Parameters.Select(BuildParameterSignature));
+            tryParameters.Add($"out {statusType} statusCode");
+
+            AppendLine(builder, 4, "/// <summary>");
+            AppendLine(builder, 4, $"/// Try wrapper over <c>{method.NativeFunctionName}</c>.");
+            AppendLine(builder, 4, "/// </summary>");
+            AppendLine(builder, 4, $"public static bool {tryMethodName}({string.Join(", ", tryParameters)})");
+            AppendLine(builder, 4, "{");
+            var callArguments = BuildFacadeCallArguments(owner, method.Parameters);
+            AppendLine(
+                builder,
+                8,
+                $"statusCode = {facadeClassName}.{method.PublicMethodName}({string.Join(", ", callArguments)});");
+            AppendLine(builder, 8, $"return {BuildStatusSuccessExpression(statusType, "statusCode")};");
+            AppendLine(builder, 4, "}");
+            builder.AppendLine();
+
+            var safeParameters = new List<string>();
+            if (owner.IsHandleOwner)
+            {
+                safeParameters.Add($"this {owner.OwnerTypeName} owner");
+            }
+
+            safeParameters.AddRange(method.Parameters.Select(BuildParameterSignature));
+            AppendLine(builder, 4, "/// <summary>");
+            AppendLine(builder, 4, $"/// Throwing wrapper over <c>{method.NativeFunctionName}</c>.");
+            AppendLine(builder, 4, "/// </summary>");
+            AppendLine(builder, 4, $"public static void {safeMethodName}({string.Join(", ", safeParameters)})");
+            AppendLine(builder, 4, "{");
+            AppendLine(
+                builder,
+                8,
+                $"var status = {facadeClassName}.{method.PublicMethodName}({string.Join(", ", callArguments)});");
+            AppendLine(builder, 8, $"if (!({BuildStatusSuccessExpression(statusType, "status")}))");
+            AppendLine(builder, 8, "{");
+            AppendLine(
+                builder,
+                12,
+                $"throw new {safeSpec.ExceptionType}(\"{method.NativeFunctionName} failed with status \" + status.ToString() + \".\");");
+            AppendLine(builder, 8, "}");
+            AppendLine(builder, 4, "}");
+            builder.AppendLine();
+        }
+
+        var hasAsyncMethods = false;
+        foreach (var method in asyncMethods)
+        {
+            var asyncSpec = method.AsyncSpec!;
+            var asyncBaseName = BuildMethodNameFromStem(safeSpec.MethodPrefix, method.MethodStem, method.MethodName);
+            if (!string.IsNullOrWhiteSpace(safeSpec.AsyncMethodSuffix))
+            {
+                asyncBaseName += safeSpec.AsyncMethodSuffix;
+            }
+
+            var asyncMethodName = EnsureUniqueMethodName(asyncBaseName, usedMethodNames);
+            var asyncParameters = new List<string>();
+            if (owner.IsHandleOwner)
+            {
+                asyncParameters.Add($"this {owner.OwnerTypeName} owner");
+            }
+
+            asyncParameters.AddRange(asyncSpec.Parameters.Select(BuildParameterSignature));
+            AppendLine(builder, 4, "/// <summary>");
+            AppendLine(builder, 4, $"/// Task wrapper over callback-based <c>{method.NativeFunctionName}</c>.");
+            AppendLine(builder, 4, "/// </summary>");
+            AppendLine(
+                builder,
+                4,
+                $"public static {asyncSpec.PublicReturnType} {asyncMethodName}({string.Join(", ", asyncParameters)})");
+            AppendLine(builder, 4, "{");
+            if (owner.IsHandleOwner)
+            {
+                AppendLine(builder, 8, "if (owner is null)");
+                AppendLine(builder, 8, "{");
+                AppendLine(builder, 12, "throw new global::System.ArgumentNullException(nameof(owner));");
+                AppendLine(builder, 8, "}");
+            }
+
+            AppendLine(
+                builder,
+                8,
+                $"var tcs = new global::System.Threading.Tasks.TaskCompletionSource<{asyncSpec.TaskResultType}>(global::System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);");
+            AppendLine(builder, 8, $"var state = new AsyncInvocationState<{asyncSpec.TaskResultType}>(tcs);");
+            AppendLine(builder, 8, "var userDataHandle = GCHandle.Alloc(state);");
+            AppendLine(builder, 8, "state.AttachHandle(userDataHandle);");
+            AppendLine(builder, 8, "var userData = GCHandle.ToIntPtr(userDataHandle);");
+            builder.AppendLine();
+
+            AppendLine(
+                builder,
+                8,
+                $"{asyncSpec.SuccessDelegateType} success = ({string.Join(", ", asyncSpec.SuccessLambdaParameters)}) =>");
+            AppendLine(builder, 8, "{");
+            AppendLine(
+                builder,
+                12,
+                $"var callbackState = AsyncInvocationState<{asyncSpec.TaskResultType}>.FromUserData({asyncSpec.SuccessUserDataParameter});");
+            AppendLine(builder, 12, "if (callbackState is null || !callbackState.TryComplete())");
+            AppendLine(builder, 12, "{");
+            AppendLine(builder, 16, "return;");
+            AppendLine(builder, 12, "}");
+            AppendLine(builder, 12, $"callbackState.Tcs.TrySetResult({asyncSpec.SuccessSetResultExpression});");
+            AppendLine(builder, 8, "};");
+            builder.AppendLine();
+
+            AppendLine(
+                builder,
+                8,
+                $"{asyncSpec.FailureDelegateType} failure = ({string.Join(", ", asyncSpec.FailureLambdaParameters)}) =>");
+            AppendLine(builder, 8, "{");
+            AppendLine(
+                builder,
+                12,
+                $"var callbackState = AsyncInvocationState<{asyncSpec.TaskResultType}>.FromUserData({asyncSpec.FailureUserDataParameter});");
+            AppendLine(builder, 12, "if (callbackState is null || !callbackState.TryComplete())");
+            AppendLine(builder, 12, "{");
+            AppendLine(builder, 16, "return;");
+            AppendLine(builder, 12, "}");
+            AppendLine(builder, 12, $"var message = {asyncSpec.FailureMessageExpression};");
+            AppendLine(
+                builder,
+                12,
+                $"callbackState.Tcs.TrySetException(new {safeSpec.ExceptionType}(message));");
+            AppendLine(builder, 8, "};");
+            builder.AppendLine();
+
+            AppendLine(builder, 8, "state.SetDelegates(success, failure);");
+            AppendLine(builder, 8, "try");
+            AppendLine(builder, 8, "{");
+            var nativeArguments = new List<string>();
+            if (owner.IsHandleOwner)
+            {
+                nativeArguments.Add("owner.DangerousGetHandle()");
+            }
+
+            nativeArguments.AddRange(asyncSpec.InvocationArguments);
+            AppendLine(
+                builder,
+                12,
+                $"NativeMethods.{method.NativeFunctionName}({string.Join(", ", nativeArguments)});");
+            AppendLine(builder, 8, "}");
+            AppendLine(builder, 8, "catch (global::System.Exception ex)");
+            AppendLine(builder, 8, "{");
+            AppendLine(builder, 12, "if (state.TryComplete())");
+            AppendLine(builder, 12, "{");
+            AppendLine(builder, 16, "state.Tcs.TrySetException(ex);");
+            AppendLine(builder, 12, "}");
+            AppendLine(builder, 8, "}");
+            AppendLine(builder, 8, "return state.Tcs.Task;");
+            AppendLine(builder, 4, "}");
+            builder.AppendLine();
+            hasAsyncMethods = true;
+        }
+
+        if (hasAsyncMethods)
+        {
+            AppendLine(builder, 4, "private sealed class AsyncInvocationState<TResult>");
+            AppendLine(builder, 4, "{");
+            AppendLine(builder, 8, "private GCHandle _selfHandle;");
+            AppendLine(builder, 8, "private int _completed;");
+            AppendLine(builder, 8, "private Delegate? _success;");
+            AppendLine(builder, 8, "private Delegate? _failure;");
+            builder.AppendLine();
+            AppendLine(builder, 8, "public AsyncInvocationState(global::System.Threading.Tasks.TaskCompletionSource<TResult> tcs)");
+            AppendLine(builder, 8, "{");
+            AppendLine(builder, 12, "Tcs = tcs;");
+            AppendLine(builder, 8, "}");
+            builder.AppendLine();
+            AppendLine(builder, 8, "public global::System.Threading.Tasks.TaskCompletionSource<TResult> Tcs { get; }");
+            builder.AppendLine();
+            AppendLine(builder, 8, "public void AttachHandle(GCHandle handle)");
+            AppendLine(builder, 8, "{");
+            AppendLine(builder, 12, "_selfHandle = handle;");
+            AppendLine(builder, 8, "}");
+            builder.AppendLine();
+            AppendLine(builder, 8, "public void SetDelegates(Delegate success, Delegate failure)");
+            AppendLine(builder, 8, "{");
+            AppendLine(builder, 12, "_success = success;");
+            AppendLine(builder, 12, "_failure = failure;");
+            AppendLine(builder, 8, "}");
+            builder.AppendLine();
+            AppendLine(builder, 8, "public bool TryComplete()");
+            AppendLine(builder, 8, "{");
+            AppendLine(builder, 12, "if (global::System.Threading.Interlocked.Exchange(ref _completed, 1) != 0)");
+            AppendLine(builder, 12, "{");
+            AppendLine(builder, 16, "return false;");
+            AppendLine(builder, 12, "}");
+            builder.AppendLine();
+            AppendLine(builder, 12, "_success = null;");
+            AppendLine(builder, 12, "_failure = null;");
+            AppendLine(builder, 12, "if (_selfHandle.IsAllocated)");
+            AppendLine(builder, 12, "{");
+            AppendLine(builder, 16, "_selfHandle.Free();");
+            AppendLine(builder, 12, "}");
+            builder.AppendLine();
+            AppendLine(builder, 12, "return true;");
+            AppendLine(builder, 8, "}");
+            builder.AppendLine();
+            AppendLine(builder, 8, "public static AsyncInvocationState<TResult>? FromUserData(IntPtr userData)");
+            AppendLine(builder, 8, "{");
+            AppendLine(builder, 12, "if (userData == IntPtr.Zero)");
+            AppendLine(builder, 12, "{");
+            AppendLine(builder, 16, "return null;");
+            AppendLine(builder, 12, "}");
+            builder.AppendLine();
+            AppendLine(builder, 12, "var handle = GCHandle.FromIntPtr(userData);");
+            AppendLine(builder, 12, "return handle.Target as AsyncInvocationState<TResult>;");
+            AppendLine(builder, 8, "}");
+            AppendLine(builder, 4, "}");
+        }
+
+        builder.AppendLine("}");
+        builder.AppendLine();
+        return builder.ToString();
+    }
+
+    private static string BuildMethodNameFromStem(string prefix, string stem, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(prefix))
+        {
+            return BuildPascalIdentifier(stem, fallback);
+        }
+
+        return BuildPascalIdentifier(prefix + "_" + stem, fallback);
+    }
+
+    private static IReadOnlyList<string> BuildFacadeCallArguments(
+        AutoAbiOwnerSpec owner,
+        IReadOnlyList<AutoAbiParameterSpec> parameters)
+    {
+        var args = new List<string>();
+        if (owner.IsHandleOwner)
+        {
+            args.Add("owner");
+        }
+
+        args.AddRange(parameters.Select(parameter =>
+            BuildInvocationArgument(parameter.Modifier, parameter.ParameterName)));
+        return args;
+    }
+
+    private static string BuildStatusSuccessExpression(string returnType, string statusVariable)
+    {
+        var normalized = returnType.Trim();
+        if (normalized.EndsWith("?", StringComparison.Ordinal))
+        {
+            normalized = normalized.Substring(0, normalized.Length - 1);
+        }
+
+        if (string.Equals(normalized, "LrtcResult", StringComparison.Ordinal) ||
+            normalized.EndsWith(".LrtcResult", StringComparison.Ordinal))
+        {
+            return statusVariable + " == " + normalized + ".Ok";
+        }
+
+        return statusVariable + " == 0";
     }
 
     private static IReadOnlyList<MethodItemSpec> ParseMethodItems(
@@ -1865,14 +2875,20 @@ internal sealed class AutoAbiSurfaceSpec
         bool enabled,
         string methodPrefix,
         string sectionSuffix,
+        string globalSection,
+        string globalClass,
         bool includeDeprecated,
-        AutoAbiPublicFacadeSpec publicFacade)
+        AutoAbiPublicFacadeSpec publicFacade,
+        AutoAbiCoverageSpec coverage)
     {
         Enabled = enabled;
         MethodPrefix = string.IsNullOrWhiteSpace(methodPrefix) ? "Abi" : methodPrefix.Trim();
         SectionSuffix = string.IsNullOrWhiteSpace(sectionSuffix) ? "_abi_surface" : sectionSuffix.Trim();
+        GlobalSection = string.IsNullOrWhiteSpace(globalSection) ? "global" : globalSection.Trim();
+        GlobalClass = string.IsNullOrWhiteSpace(globalClass) ? "Global" : globalClass.Trim();
         IncludeDeprecated = includeDeprecated;
         PublicFacade = publicFacade;
+        Coverage = coverage;
     }
 
     public bool Enabled { get; }
@@ -1881,9 +2897,15 @@ internal sealed class AutoAbiSurfaceSpec
 
     public string SectionSuffix { get; }
 
+    public string GlobalSection { get; }
+
+    public string GlobalClass { get; }
+
     public bool IncludeDeprecated { get; }
 
     public AutoAbiPublicFacadeSpec PublicFacade { get; }
+
+    public AutoAbiCoverageSpec Coverage { get; }
 
     public static AutoAbiSurfaceSpec Disabled()
     {
@@ -1891,8 +2913,11 @@ internal sealed class AutoAbiSurfaceSpec
             enabled: false,
             methodPrefix: "Abi",
             sectionSuffix: "_abi_surface",
+            globalSection: "global",
+            globalClass: "Global",
             includeDeprecated: false,
-            publicFacade: AutoAbiPublicFacadeSpec.Disabled());
+            publicFacade: AutoAbiPublicFacadeSpec.Disabled(),
+            coverage: AutoAbiCoverageSpec.Default());
     }
 }
 
@@ -1904,7 +2929,8 @@ internal sealed class AutoAbiPublicFacadeSpec
         string methodPrefix,
         string typedMethodPrefix,
         string sectionSuffix,
-        bool allowIntPtr)
+        bool allowIntPtr,
+        AutoAbiSafeFacadeSpec safeFacade)
     {
         Enabled = enabled;
         ClassSuffix = string.IsNullOrWhiteSpace(classSuffix) ? "_abi_facade" : classSuffix.Trim();
@@ -1912,6 +2938,7 @@ internal sealed class AutoAbiPublicFacadeSpec
         TypedMethodPrefix = typedMethodPrefix?.Trim() ?? string.Empty;
         SectionSuffix = string.IsNullOrWhiteSpace(sectionSuffix) ? "_abi_facade" : sectionSuffix.Trim();
         AllowIntPtr = allowIntPtr;
+        SafeFacade = safeFacade;
     }
 
     public bool Enabled { get; }
@@ -1926,6 +2953,8 @@ internal sealed class AutoAbiPublicFacadeSpec
 
     public bool AllowIntPtr { get; }
 
+    public AutoAbiSafeFacadeSpec SafeFacade { get; }
+
     public static AutoAbiPublicFacadeSpec Disabled()
     {
         return new AutoAbiPublicFacadeSpec(
@@ -1934,29 +2963,209 @@ internal sealed class AutoAbiPublicFacadeSpec
             methodPrefix: "Raw",
             typedMethodPrefix: "Typed",
             sectionSuffix: "_abi_facade",
-            allowIntPtr: false);
+            allowIntPtr: false,
+            safeFacade: AutoAbiSafeFacadeSpec.Default());
     }
+}
+
+internal sealed class AutoAbiSafeFacadeSpec
+{
+    public AutoAbiSafeFacadeSpec(
+        bool enabled,
+        string classSuffix,
+        string methodPrefix,
+        string tryMethodPrefix,
+        string asyncMethodSuffix,
+        string sectionSuffix,
+        string exceptionType)
+    {
+        Enabled = enabled;
+        ClassSuffix = string.IsNullOrWhiteSpace(classSuffix) ? "_abi_safe" : classSuffix.Trim();
+        MethodPrefix = methodPrefix?.Trim() ?? string.Empty;
+        TryMethodPrefix = string.IsNullOrWhiteSpace(tryMethodPrefix) ? "Try" : tryMethodPrefix.Trim();
+        AsyncMethodSuffix = string.IsNullOrWhiteSpace(asyncMethodSuffix) ? "Async" : asyncMethodSuffix.Trim();
+        SectionSuffix = string.IsNullOrWhiteSpace(sectionSuffix) ? "_abi_safe" : sectionSuffix.Trim();
+        ExceptionType = string.IsNullOrWhiteSpace(exceptionType)
+            ? "global::System.InvalidOperationException"
+            : exceptionType.Trim();
+    }
+
+    public bool Enabled { get; }
+
+    public string ClassSuffix { get; }
+
+    public string MethodPrefix { get; }
+
+    public string TryMethodPrefix { get; }
+
+    public string AsyncMethodSuffix { get; }
+
+    public string SectionSuffix { get; }
+
+    public string ExceptionType { get; }
+
+    public static AutoAbiSafeFacadeSpec Default()
+    {
+        return new AutoAbiSafeFacadeSpec(
+            enabled: true,
+            classSuffix: "_abi_safe",
+            methodPrefix: string.Empty,
+            tryMethodPrefix: "Try",
+            asyncMethodSuffix: "Async",
+            sectionSuffix: "_abi_safe",
+            exceptionType: "global::System.InvalidOperationException");
+    }
+}
+
+internal sealed class AutoAbiCoverageSpec
+{
+    public AutoAbiCoverageSpec(bool strict, Dictionary<string, string> waivedFunctions)
+    {
+        Strict = strict;
+        WaivedFunctions = waivedFunctions;
+    }
+
+    public bool Strict { get; }
+
+    public Dictionary<string, string> WaivedFunctions { get; }
+
+    public bool IsWaived(string functionName)
+    {
+        return WaivedFunctions.ContainsKey(functionName);
+    }
+
+    public static AutoAbiCoverageSpec Default()
+    {
+        return new AutoAbiCoverageSpec(
+            strict: true,
+            waivedFunctions: new Dictionary<string, string>(StringComparer.Ordinal));
+    }
+}
+
+internal sealed class AutoAbiOwnerSpec
+{
+    public AutoAbiOwnerSpec(
+        string ownerKey,
+        string sectionStem,
+        string classStem,
+        string? ownerTypeName,
+        ManagedHandleSpec? handle)
+    {
+        OwnerKey = ownerKey;
+        SectionStem = sectionStem;
+        ClassStem = classStem;
+        OwnerTypeName = ownerTypeName;
+        Handle = handle;
+    }
+
+    public string OwnerKey { get; }
+
+    public string SectionStem { get; }
+
+    public string ClassStem { get; }
+
+    public string? OwnerTypeName { get; }
+
+    public ManagedHandleSpec? Handle { get; }
+
+    public bool IsHandleOwner => !string.IsNullOrWhiteSpace(OwnerTypeName);
+}
+
+internal sealed class AutoAbiConvertedValueSpec
+{
+    public AutoAbiConvertedValueSpec(string typeName, string expression)
+    {
+        TypeName = typeName;
+        Expression = expression;
+    }
+
+    public string TypeName { get; }
+
+    public string Expression { get; }
+}
+
+internal sealed class AutoAbiAsyncSpec
+{
+    public AutoAbiAsyncSpec(
+        IReadOnlyList<AutoAbiParameterSpec> parameters,
+        IReadOnlyList<string> invocationArguments,
+        string publicReturnType,
+        string taskResultType,
+        string successDelegateType,
+        string failureDelegateType,
+        IReadOnlyList<string> successLambdaParameters,
+        IReadOnlyList<string> failureLambdaParameters,
+        string successUserDataParameter,
+        string failureUserDataParameter,
+        string successSetResultExpression,
+        string failureMessageExpression)
+    {
+        Parameters = parameters;
+        InvocationArguments = invocationArguments;
+        PublicReturnType = publicReturnType;
+        TaskResultType = taskResultType;
+        SuccessDelegateType = successDelegateType;
+        FailureDelegateType = failureDelegateType;
+        SuccessLambdaParameters = successLambdaParameters;
+        FailureLambdaParameters = failureLambdaParameters;
+        SuccessUserDataParameter = successUserDataParameter;
+        FailureUserDataParameter = failureUserDataParameter;
+        SuccessSetResultExpression = successSetResultExpression;
+        FailureMessageExpression = failureMessageExpression;
+    }
+
+    public IReadOnlyList<AutoAbiParameterSpec> Parameters { get; }
+
+    public IReadOnlyList<string> InvocationArguments { get; }
+
+    public string PublicReturnType { get; }
+
+    public string TaskResultType { get; }
+
+    public string SuccessDelegateType { get; }
+
+    public string FailureDelegateType { get; }
+
+    public IReadOnlyList<string> SuccessLambdaParameters { get; }
+
+    public IReadOnlyList<string> FailureLambdaParameters { get; }
+
+    public string SuccessUserDataParameter { get; }
+
+    public string FailureUserDataParameter { get; }
+
+    public string SuccessSetResultExpression { get; }
+
+    public string FailureMessageExpression { get; }
 }
 
 internal sealed class AutoAbiMethodSpec
 {
     public AutoAbiMethodSpec(
         string methodName,
+        string methodStem,
         string returnType,
         string returnCType,
         IReadOnlyList<AutoAbiParameterSpec> parameters,
         IReadOnlyList<string> invocationArguments,
-        string nativeFunctionName)
+        string nativeFunctionName,
+        bool isStatusLike,
+        AutoAbiAsyncSpec? asyncSpec)
     {
         MethodName = methodName;
+        MethodStem = methodStem;
         ReturnType = returnType;
         ReturnCType = returnCType;
         Parameters = parameters;
         InvocationArguments = invocationArguments;
         NativeFunctionName = nativeFunctionName;
+        IsStatusLike = isStatusLike;
+        AsyncSpec = asyncSpec;
     }
 
     public string MethodName { get; }
+
+    public string MethodStem { get; }
 
     public string ReturnType { get; }
 
@@ -1967,6 +3176,10 @@ internal sealed class AutoAbiMethodSpec
     public IReadOnlyList<string> InvocationArguments { get; }
 
     public string NativeFunctionName { get; }
+
+    public bool IsStatusLike { get; }
+
+    public AutoAbiAsyncSpec? AsyncSpec { get; }
 }
 
 internal sealed class AutoAbiParameterSpec
@@ -1997,7 +3210,10 @@ internal sealed class AutoAbiFacadeMethodSpec
         IReadOnlyList<string> forwardedArguments,
         string innerMethodName,
         string nativeFunctionName,
-        string? handleReturnType)
+        string? handleReturnType,
+        string methodStem,
+        bool isTyped,
+        bool isStatusLike)
     {
         PublicMethodName = publicMethodName;
         ReturnType = returnType;
@@ -2006,6 +3222,9 @@ internal sealed class AutoAbiFacadeMethodSpec
         InnerMethodName = innerMethodName;
         NativeFunctionName = nativeFunctionName;
         HandleReturnType = handleReturnType;
+        MethodStem = methodStem;
+        IsTyped = isTyped;
+        IsStatusLike = isStatusLike;
     }
 
     public string PublicMethodName { get; }
@@ -2021,6 +3240,12 @@ internal sealed class AutoAbiFacadeMethodSpec
     public string NativeFunctionName { get; }
 
     public string? HandleReturnType { get; }
+
+    public string MethodStem { get; }
+
+    public bool IsTyped { get; }
+
+    public bool IsStatusLike { get; }
 }
 
 internal sealed class ManagedApiOutputHints

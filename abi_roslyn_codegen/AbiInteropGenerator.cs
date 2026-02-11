@@ -250,6 +250,7 @@ public sealed class AbiInteropGenerator : IIncrementalGenerator
             var managedApiModel = ManagedApiSourceEmitter.ParseManagedApiMetadata(
                 matchedManagedApiFile.Value.Content!,
                 model,
+                typeModel,
                 managedHandlesModel);
             var managedApiSources = ManagedApiSourceEmitter.RenderSources(managedApiModel);
             foreach (var generatedSource in managedApiSources)

@@ -44,14 +44,20 @@ during compilation.
 ### Managed API `auto_abi_surface`
 
 `managed_api.auto_abi_surface` can auto-generate low-level ABI forwarding methods for each
-managed handle class directly from IDL function signatures.
-The generated methods live in dedicated internal extension-surface classes
-(`{HandleClass}{SectionSuffixPascal}`), so user-facing handle classes stay clean.
+managed handle class directly from IDL function signatures, plus global ABI entrypoints.
+The generated methods live in dedicated internal surface classes
+(`{HandleClass}{SectionSuffixPascal}` and global `{GlobalClass}{SectionSuffixPascal}`),
+so user-facing handle classes stay clean.
 
 - `enabled`: toggles auto-surface generation.
 - `method_prefix`: prefix for generated methods (default: `Abi`).
 - `section_suffix`: output-hint section suffix for generated per-class sections.
+- `global_section`: output-hint section stem for non-handle ABI functions (default: `global`).
+- `global_class`: class stem for non-handle ABI functions (default: `Global`).
 - `include_deprecated`: include deprecated IDL functions when `true`.
+- `coverage`: strict ABI classification gate:
+  - `strict`: fail generation if a non-waived ABI function is not classified/emitted.
+  - `waived_functions`: optional explicit waivers (`"name"` or `{ "name", "reason" }`).
 - `public_facade`: optional public extension layer over internal ABI surface:
   - `enabled`: toggles public facade generation.
   - `class_suffix`: suffix for generated facade class names.
@@ -59,6 +65,14 @@ The generated methods live in dedicated internal extension-surface classes
   - `typed_method_prefix`: prefix for generated typed-wrapper methods (default: `Typed`).
   - `section_suffix`: output-hint section suffix for facade sections.
   - `allow_int_ptr`: allow `IntPtr`/`nint` signatures in public facade.
+  - `safe_facade`: optional safe/task facade over raw/typed:
+    - `enabled`: toggles safe facade generation.
+    - `class_suffix`: suffix for safe facade class names.
+    - `method_prefix`: prefix for throwing/safe methods.
+    - `try_method_prefix`: prefix for `Try*` status wrappers.
+    - `async_method_suffix`: suffix for callback-lifted task methods.
+    - `section_suffix`: output-hint section suffix for safe facade sections.
+    - `exception_type`: exception type used for safe wrapper failures.
 
 ### Interop Binding Overrides
 
