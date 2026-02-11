@@ -170,12 +170,16 @@ def command_doctor(args: argparse.Namespace) -> int:
             if not isinstance(bindings_cfg, dict):
                 issues.append(("error", target_name, "bindings must be an object when specified"))
             else:
-                expected_symbols = bindings_cfg.get("expected_symbols")
-                if expected_symbols is not None:
-                    if not isinstance(expected_symbols, list):
-                        issues.append(("error", target_name, "bindings.expected_symbols must be an array"))
-                    elif not expected_symbols:
-                        issues.append(("warning", target_name, "bindings.expected_symbols is empty"))
+                try:
+                    symbol_contract = resolve_bindings_symbol_contract(
+                        target=target,
+                        target_name=target_name,
+                        repo_root=repo_root,
+                    )
+                    if bool(symbol_contract.get("declared")) and not bool(symbol_contract.get("configured")):
+                        issues.append(("warning", target_name, "bindings symbol contract is declared but empty"))
+                except AbiFrameworkError as exc:
+                    issues.append(("error", target_name, str(exc)))
 
         baseline_path = resolve_baseline_for_target(
             repo_root=repo_root,

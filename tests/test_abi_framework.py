@@ -89,7 +89,10 @@ MY_API int MY_CALL my_add(int a, int b);
                         },
                     },
                     "bindings": {
-                        "expected_symbols": ["my_add", "my_init"],
+                        "symbol_contract": {
+                            "mode": "strict",
+                            "symbols": ["my_add", "my_init"],
+                        },
                     },
                     "codegen": {
                         "enabled": True,
@@ -583,6 +586,116 @@ typedef void (LUMENRTC_CALL *lrtc_void_cb)(void* user_data);
 
         with self.assertRaises(abi_framework.AbiFrameworkError):
             _ = abi_framework.load_config(config_path)
+
+    def test_symbol_contract_strict_fail_on_sync_detects_extra(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        config = abi_framework.load_json(config_path)
+        contract_path = self.repo_root / "abi" / "bindings" / "demo.symbol_contract.json"
+        contract_path.parent.mkdir(parents=True, exist_ok=True)
+        contract_path.write_text(
+            json.dumps({"schema_version": 1, "symbols": ["my_init"]}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        config["targets"]["demo"]["bindings"] = {
+            "symbol_contract": {
+                "path": "abi/bindings/demo.symbol_contract.json",
+                "mode": "strict",
+            }
+        }
+        abi_framework.write_json(config_path, config)
+
+        exit_code = abi_framework.command_generate(
+            argparse.Namespace(
+                repo_root=str(self.repo_root),
+                config=str(config_path),
+                target="demo",
+                binary=None,
+                skip_binary=True,
+                idl_output=None,
+                dry_run=False,
+                check=False,
+                print_diff=False,
+                report_json=None,
+                fail_on_sync=True,
+            )
+        )
+        self.assertEqual(exit_code, 1)
+
+    def test_symbol_contract_required_only_ignores_extra(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        config = abi_framework.load_json(config_path)
+        contract_path = self.repo_root / "abi" / "bindings" / "demo.symbol_contract.json"
+        contract_path.parent.mkdir(parents=True, exist_ok=True)
+        contract_path.write_text(
+            json.dumps({"schema_version": 1, "symbols": ["my_init"]}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        config["targets"]["demo"]["bindings"] = {
+            "symbol_contract": {
+                "path": "abi/bindings/demo.symbol_contract.json",
+                "mode": "required_only",
+            }
+        }
+        abi_framework.write_json(config_path, config)
+
+        exit_code = abi_framework.command_generate(
+            argparse.Namespace(
+                repo_root=str(self.repo_root),
+                config=str(config_path),
+                target="demo",
+                binary=None,
+                skip_binary=True,
+                idl_output=None,
+                dry_run=False,
+                check=False,
+                print_diff=False,
+                report_json=None,
+                fail_on_sync=True,
+            )
+        )
+        self.assertEqual(exit_code, 0)
+
+    def test_symbol_contract_path_can_define_mode(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        config = abi_framework.load_json(config_path)
+        contract_path = self.repo_root / "abi" / "bindings" / "demo.symbol_contract.json"
+        contract_path.parent.mkdir(parents=True, exist_ok=True)
+        contract_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "mode": "required_only",
+                    "symbols": ["my_init"],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        config["targets"]["demo"]["bindings"] = {
+            "symbol_contract": {
+                "path": "abi/bindings/demo.symbol_contract.json",
+            }
+        }
+        abi_framework.write_json(config_path, config)
+
+        exit_code = abi_framework.command_generate(
+            argparse.Namespace(
+                repo_root=str(self.repo_root),
+                config=str(config_path),
+                target="demo",
+                binary=None,
+                skip_binary=True,
+                idl_output=None,
+                dry_run=False,
+                check=False,
+                print_diff=False,
+                report_json=None,
+                fail_on_sync=True,
+            )
+        )
+        self.assertEqual(exit_code, 0)
 
     def test_benchmark_command(self) -> None:
         output_path = self.repo_root / "artifacts" / "benchmark.json"

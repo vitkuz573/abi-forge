@@ -177,7 +177,10 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
         ]
       },
       "bindings": {
-        "expected_symbols": ["my_init", "my_shutdown"],
+        "symbol_contract": {
+          "path": "abi/bindings/my_target.symbol_contract.json",
+          "mode": "strict"
+        },
         "metadata_path": "abi/bindings/my_target.bindings.json",
         "metadata": {
           "managed": {
@@ -228,7 +231,10 @@ python3 tools/abi_framework/abi_framework.py release-prepare \
 
 Notes:
 
-- `bindings.expected_symbols` is optional but recommended.
+- `bindings.symbol_contract` is optional but recommended.
+- `bindings.symbol_contract.mode`:
+  - `strict`: fail on missing + extra generated symbols.
+  - `required_only`: fail only on missing required symbols.
 - `bindings.metadata_path` and `bindings.metadata` are target-agnostic metadata inputs merged into `idl.bindings`.
 - `codegen` command runs IDL generation plus configured language generators.
 - If `codegen.native_header_output_path`/`codegen.native_export_map_output_path` are set,

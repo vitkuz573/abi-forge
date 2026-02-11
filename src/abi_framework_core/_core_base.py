@@ -157,13 +157,20 @@ def strip_c_comments(content: str) -> str:
     return content
 
 
-def load_json(path: Path) -> dict[str, Any]:
+def load_json_any(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise AbiFrameworkError(f"Unable to read JSON file '{path}': {exc}") from exc
     except json.JSONDecodeError as exc:
         raise AbiFrameworkError(f"Invalid JSON in '{path}': {exc}") from exc
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    value = load_json_any(path)
+    if not isinstance(value, dict):
+        raise AbiFrameworkError(f"JSON root in '{path}' must be an object")
+    return value
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -309,15 +316,40 @@ def validate_config_payload(payload: dict[str, Any]) -> None:
         if bindings is not None:
             if not isinstance(bindings, dict):
                 raise AbiFrameworkError(f"target '{target_name}'.bindings must be an object when specified")
-            expected_symbols = bindings.get("expected_symbols")
-            if expected_symbols is not None:
-                if not isinstance(expected_symbols, list):
-                    raise AbiFrameworkError(f"target '{target_name}'.bindings.expected_symbols must be an array")
-                for idx, symbol in enumerate(expected_symbols):
-                    if not isinstance(symbol, str) or not symbol:
+
+            symbol_contract = bindings.get("symbol_contract")
+            if symbol_contract is not None:
+                if not isinstance(symbol_contract, dict):
+                    raise AbiFrameworkError(
+                        f"target '{target_name}'.bindings.symbol_contract must be an object when specified"
+                    )
+                contract_path = symbol_contract.get("path")
+                contract_symbols = symbol_contract.get("symbols")
+                contract_mode = symbol_contract.get("mode")
+                if contract_path is not None and (not isinstance(contract_path, str) or not contract_path):
+                    raise AbiFrameworkError(
+                        f"target '{target_name}'.bindings.symbol_contract.path must be a non-empty string when specified"
+                    )
+                if contract_symbols is not None:
+                    if not isinstance(contract_symbols, list):
                         raise AbiFrameworkError(
-                            f"target '{target_name}'.bindings.expected_symbols[{idx}] must be a non-empty string"
+                            f"target '{target_name}'.bindings.symbol_contract.symbols must be an array when specified"
                         )
+                    for idx, symbol in enumerate(contract_symbols):
+                        if not isinstance(symbol, str) or not symbol:
+                            raise AbiFrameworkError(
+                                f"target '{target_name}'.bindings.symbol_contract.symbols[{idx}] must be a non-empty string"
+                            )
+                if contract_mode is not None and (
+                    not isinstance(contract_mode, str) or contract_mode not in {"strict", "required_only"}
+                ):
+                    raise AbiFrameworkError(
+                        f"target '{target_name}'.bindings.symbol_contract.mode must be one of: strict, required_only"
+                    )
+                if contract_path is None and contract_symbols is None:
+                    raise AbiFrameworkError(
+                        f"target '{target_name}'.bindings.symbol_contract must specify at least one of: path, symbols"
+                    )
             symbol_docs = bindings.get("symbol_docs")
             if symbol_docs is not None:
                 if not isinstance(symbol_docs, dict):
@@ -587,6 +619,132 @@ def normalize_string_list(value: Any, key: str) -> list[str]:
             raise AbiFrameworkError(f"Target field '{key}[{idx}]' must be a non-empty string.")
         out.append(item)
     return out
+
+
+def _dedupe_sorted_symbols(values: list[str]) -> list[str]:
+    return sorted({item for item in values if isinstance(item, str) and item.strip()})
+
+
+def _parse_symbol_contract_mode(value: Any, key: str) -> str:
+    if value is None:
+        return "strict"
+    if not isinstance(value, str) or value not in {"strict", "required_only"}:
+        raise AbiFrameworkError(f"{key} must be one of: strict, required_only")
+    return value
+
+
+def _load_symbol_contract_symbols_from_path(
+    *,
+    repo_root: Path,
+    target_name: str,
+    path_value: str,
+) -> tuple[list[str], str, str | None]:
+    contract_path = ensure_relative_path(repo_root, path_value).resolve()
+    payload = load_json_any(contract_path)
+    payload_mode: str | None = None
+
+    if isinstance(payload, list):
+        symbols = normalize_string_list(
+            payload,
+            f"target '{target_name}'.bindings.symbol_contract.path('{path_value}')",
+        )
+    elif isinstance(payload, dict):
+        raw_symbols = payload.get("symbols")
+        if raw_symbols is None:
+            raise AbiFrameworkError(
+                f"target '{target_name}'.bindings.symbol_contract.path('{path_value}') must resolve to array root "
+                f"or object with non-empty key 'symbols'"
+            )
+        symbols = normalize_string_list(
+            raw_symbols,
+            f"target '{target_name}'.bindings.symbol_contract.path('{path_value}').symbols",
+        )
+        payload_mode = _parse_symbol_contract_mode(
+            payload.get("mode"),
+            f"target '{target_name}'.bindings.symbol_contract.path('{path_value}').mode",
+        )
+    else:
+        raise AbiFrameworkError(
+            f"target '{target_name}'.bindings.symbol_contract.path('{path_value}') must resolve to array root "
+            f"or object with key 'symbols'"
+        )
+
+    return symbols, to_repo_relative(contract_path, repo_root), payload_mode
+
+
+def resolve_bindings_symbol_contract(
+    *,
+    target: dict[str, Any],
+    target_name: str,
+    repo_root: Path,
+) -> dict[str, Any]:
+    not_configured = {
+        "declared": False,
+        "configured": False,
+        "mode": "strict",
+        "symbols": [],
+        "source": "not_configured",
+    }
+
+    bindings_cfg = target.get("bindings")
+    if not isinstance(bindings_cfg, dict):
+        return not_configured
+
+    symbol_contract = bindings_cfg.get("symbol_contract")
+    if symbol_contract is None:
+        return not_configured
+
+    if not isinstance(symbol_contract, dict):
+        raise AbiFrameworkError(f"target '{target_name}'.bindings.symbol_contract must be an object when specified")
+
+    inline_symbols_raw = symbol_contract.get("symbols")
+    path_value = symbol_contract.get("path")
+    if inline_symbols_raw is None and path_value is None:
+        raise AbiFrameworkError(
+            f"target '{target_name}'.bindings.symbol_contract must specify at least one of: path, symbols"
+        )
+    if path_value is not None and (not isinstance(path_value, str) or not path_value):
+        raise AbiFrameworkError(
+            f"target '{target_name}'.bindings.symbol_contract.path must be a non-empty string when specified"
+        )
+
+    explicit_mode = _parse_symbol_contract_mode(
+        symbol_contract.get("mode"),
+        f"target '{target_name}'.bindings.symbol_contract.mode",
+    )
+    mode = explicit_mode
+
+    source_parts: list[str] = []
+    collected: list[str] = []
+
+    if path_value is not None:
+        path_symbols, path_rel, mode_from_file = _load_symbol_contract_symbols_from_path(
+            repo_root=repo_root,
+            target_name=target_name,
+            path_value=path_value,
+        )
+        if symbol_contract.get("mode") is None and mode_from_file is not None:
+            mode = mode_from_file
+        source_parts.append(f"path:{path_rel}")
+        collected.extend(path_symbols)
+
+    if inline_symbols_raw is not None:
+        inline_symbols = normalize_string_list(
+            inline_symbols_raw,
+            f"target '{target_name}'.bindings.symbol_contract.symbols",
+        )
+        source_parts.append("symbols:inline")
+        collected.extend(inline_symbols)
+
+    symbols = _dedupe_sorted_symbols(collected)
+    source_suffix = ",".join(source_parts) if source_parts else "inline"
+    return {
+        "declared": True,
+        "configured": bool(symbols),
+        "mode": mode,
+        "symbols": symbols,
+        "source": f"bindings.symbol_contract({source_suffix})",
+    }
 
 
 def parse_utc_timestamp(value: str) -> dt.datetime:

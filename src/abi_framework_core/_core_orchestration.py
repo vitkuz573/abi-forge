@@ -5,6 +5,37 @@ from ._core_codegen import *  # noqa: F401,F403
 from ._core_snapshot import *  # noqa: F401,F403
 from ._core_compare import *  # noqa: F401,F403
 
+
+def build_symbol_contract_sync_comparison(
+    *,
+    generated_symbols: set[str],
+    symbol_contract: dict[str, Any],
+) -> dict[str, Any]:
+    contract_symbols = set(get_message_list(symbol_contract, "symbols"))
+    contract_mode = str(symbol_contract.get("mode", "strict"))
+    configured = bool(symbol_contract.get("configured"))
+    declared = bool(symbol_contract.get("declared"))
+    source = str(symbol_contract.get("source", "not_configured"))
+    missing_symbols = sorted(contract_symbols - generated_symbols)
+    extra_symbols = sorted(generated_symbols - contract_symbols) if configured and contract_mode == "strict" else []
+
+    return {
+        "mode": "symbol_contract" if configured else "not_configured",
+        "contract_mode": contract_mode,
+        "declared": declared,
+        "configured": configured,
+        "source": source,
+        "required_symbol_count": len(contract_symbols),
+        "generated_symbol_count": len(generated_symbols),
+        "missing_symbols": missing_symbols,
+        "extra_symbols": extra_symbols,
+    }
+
+
+def has_symbol_contract_sync_drift(comparison: dict[str, Any]) -> bool:
+    return bool(get_message_list(comparison, "missing_symbols")) or bool(get_message_list(comparison, "extra_symbols"))
+
+
 def resolve_target_names(config: dict[str, Any], target_name: str | None) -> list[str]:
     targets_obj = config.get("targets")
     if not isinstance(targets_obj, dict) or not targets_obj:
@@ -82,18 +113,15 @@ def build_codegen_for_target(
         for item in idl_payload.get("functions", [])
         if isinstance(item, dict) and isinstance(item.get("name"), str)
     }
-    bindings_cfg = target.get("bindings")
-    expected_symbols: set[str] = set()
-    if isinstance(bindings_cfg, dict):
-        raw = bindings_cfg.get("expected_symbols")
-        if isinstance(raw, list):
-            expected_symbols = {str(item) for item in raw if isinstance(item, str) and item}
-
-    sync_comparison = {
-        "mode": "expected_symbols" if expected_symbols else "not_configured",
-        "missing_symbols": sorted(expected_symbols - generated_symbols),
-        "extra_symbols": sorted(generated_symbols - expected_symbols) if expected_symbols else [],
-    }
+    symbol_contract = resolve_bindings_symbol_contract(
+        target=target,
+        target_name=target_name,
+        repo_root=repo_root,
+    )
+    sync_comparison = build_symbol_contract_sync_comparison(
+        generated_symbols=generated_symbols,
+        symbol_contract=symbol_contract,
+    )
 
     if print_diff and idl_diff:
         print(idl_diff)
@@ -137,7 +165,7 @@ def build_codegen_for_target(
             print(export_map_diff)
 
     has_codegen_drift = any(status in {"drift", "would_write"} for status in artifact_statuses)
-    has_sync_drift = bool(sync_comparison["missing_symbols"]) or bool(sync_comparison["extra_symbols"])
+    has_sync_drift = has_symbol_contract_sync_drift(sync_comparison)
 
     return {
         "target": target_name,
@@ -167,19 +195,25 @@ def build_codegen_for_target(
 
 def print_sync_comparison(target_name: str, comparison: dict[str, Any]) -> None:
     mode = str(comparison.get("mode", "not_configured"))
+    contract_mode = str(comparison.get("contract_mode", "strict"))
+    source = str(comparison.get("source", "not_configured"))
+    declared = bool(comparison.get("declared"))
     missing = get_message_list(comparison, "missing_symbols")
     extra = get_message_list(comparison, "extra_symbols")
 
     if mode == "not_configured":
-        print(f"[{target_name}] bindings sync: not configured")
+        if declared:
+            print(f"[{target_name}] bindings sync: configured but empty symbols ({source})")
+        else:
+            print(f"[{target_name}] bindings sync: not configured")
         return
 
     if not missing and not extra:
-        print(f"[{target_name}] bindings sync: clean")
+        print(f"[{target_name}] bindings sync: clean ({contract_mode}, {source})")
         return
 
-    print(f"[{target_name}] bindings sync: drift")
+    print(f"[{target_name}] bindings sync: drift ({contract_mode}, {source})")
     if missing:
-        print(f"  missing expected symbols: {', '.join(missing)}")
+        print(f"  missing required symbols: {', '.join(missing)}")
     if extra:
         print(f"  extra generated symbols: {', '.join(extra)}")

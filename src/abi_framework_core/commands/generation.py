@@ -106,6 +106,36 @@ def command_codegen(args: argparse.Namespace) -> int:
             exit_code = 1
             aggregate["summary"]["generator_fail_count"] += 1
 
+        sync_after_codegen = generated.get("sync")
+        try:
+            idl_payload = generated.get("idl_payload") if isinstance(generated, dict) else None
+            generated_symbols = {
+                str(item.get("name"))
+                for item in (idl_payload.get("functions", []) if isinstance(idl_payload, dict) else [])
+                if isinstance(item, dict) and isinstance(item.get("name"), str)
+            }
+            symbol_contract = resolve_bindings_symbol_contract(
+                target=target,
+                target_name=target_name,
+                repo_root=repo_root,
+            )
+            sync_after_codegen = build_symbol_contract_sync_comparison(
+                generated_symbols=generated_symbols,
+                symbol_contract=symbol_contract,
+            )
+            generated["sync"] = sync_after_codegen
+            generated["has_sync_drift"] = has_symbol_contract_sync_drift(sync_after_codegen)
+        except AbiFrameworkError as exc:
+            exit_code = 1
+            generator_results.append(
+                {
+                    "name": "symbol_contract_sync",
+                    "kind": "internal",
+                    "status": "fail",
+                    "stderr": str(exc),
+                }
+            )
+
         if bool(args.check) and bool(generated.get("has_codegen_drift")):
             exit_code = 1
         if bool(args.fail_on_sync) and bool(generated.get("has_sync_drift")):
@@ -126,10 +156,12 @@ def command_codegen(args: argparse.Namespace) -> int:
                 stderr = str(item.get("stderr") or "")
                 if stderr:
                     print(f"  stderr: {stderr}")
+        if isinstance(sync_after_codegen, dict):
+            print_sync_comparison(target_name, sync_after_codegen)
 
         aggregate["results"][target_name] = {
             "idl": generated.get("artifacts"),
-            "sync": generated.get("sync"),
+            "sync": sync_after_codegen,
             "has_codegen_drift": generated.get("has_codegen_drift"),
             "has_sync_drift": generated.get("has_sync_drift"),
             "generators": generator_results,

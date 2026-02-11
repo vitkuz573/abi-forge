@@ -141,9 +141,23 @@
             "type": "object",
             "additionalProperties": true,
             "properties": {
-              "expected_symbols": {
-                "type": "array",
-                "items": { "type": "string", "minLength": 1 }
+              "symbol_contract": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "symbols": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 }
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": ["strict", "required_only"]
+                  }
+                }
               },
               "symbol_docs": {
                 "type": "object",

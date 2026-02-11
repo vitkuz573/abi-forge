@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ._core_base import *  # noqa: F401,F403
 from ._core_codegen import *  # noqa: F401,F403
+from ._core_compare import *  # noqa: F401,F403
 
 def parse_nm_exports(output: str) -> list[str]:
     exports: set[str] = set()
@@ -285,17 +286,20 @@ def build_snapshot(config: dict[str, Any], target_name: str, repo_root: Path, bi
         "symbol_count": 0,
         "symbols": [],
     }
-    bindings_cfg = target.get("bindings")
-    if isinstance(bindings_cfg, dict):
-        expected_symbols = bindings_cfg.get("expected_symbols")
-        if isinstance(expected_symbols, list):
-            cleaned_symbols = sorted({str(item) for item in expected_symbols if isinstance(item, str) and item})
-            bindings_payload = {
-                "available": True,
-                "source": "config.bindings.expected_symbols",
-                "symbol_count": len(cleaned_symbols),
-                "symbols": cleaned_symbols,
-            }
+    symbol_contract = resolve_bindings_symbol_contract(
+        target=target,
+        target_name=target_name,
+        repo_root=repo_root,
+    )
+    symbols = get_message_list(symbol_contract, "symbols")
+    if bool(symbol_contract.get("declared")):
+        bindings_payload = {
+            "available": bool(symbol_contract.get("configured")),
+            "source": str(symbol_contract.get("source", "not_configured")),
+            "mode": str(symbol_contract.get("mode", "strict")),
+            "symbol_count": len(symbols),
+            "symbols": symbols,
+        }
 
     binary_payload: dict[str, Any]
     if skip_binary:

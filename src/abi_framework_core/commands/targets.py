@@ -78,7 +78,10 @@ def command_init_target(args: argparse.Namespace) -> int:
 
     if args.binding_symbol:
         target_entry["bindings"] = {
-            "expected_symbols": args.binding_symbol,
+            "symbol_contract": {
+                "mode": "strict",
+                "symbols": args.binding_symbol,
+            },
         }
 
     if args.binary_path:
