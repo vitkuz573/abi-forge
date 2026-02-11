@@ -52,6 +52,12 @@ The generated methods live in dedicated internal extension-surface classes
 - `method_prefix`: prefix for generated methods (default: `Abi`).
 - `section_suffix`: output-hint section suffix for generated per-class sections.
 - `include_deprecated`: include deprecated IDL functions when `true`.
+- `public_facade`: optional public extension layer over internal ABI surface:
+  - `enabled`: toggles public facade generation.
+  - `class_suffix`: suffix for generated facade class names.
+  - `method_prefix`: public method prefix (default: `Raw`).
+  - `section_suffix`: output-hint section suffix for facade sections.
+  - `allow_int_ptr`: allow `IntPtr`/`nint` signatures in public facade.
 
 ### Interop Binding Overrides
 

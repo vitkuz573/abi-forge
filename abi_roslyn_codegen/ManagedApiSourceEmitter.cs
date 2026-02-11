@@ -61,6 +61,29 @@ internal static class ManagedApiSourceEmitter
         "virtual", "void", "volatile", "while",
     };
 
+    private static readonly HashSet<string> PublicScalarTypeNames = new(StringComparer.Ordinal)
+    {
+        "void",
+        "bool",
+        "byte",
+        "sbyte",
+        "char",
+        "short",
+        "ushort",
+        "int",
+        "uint",
+        "long",
+        "ulong",
+        "float",
+        "double",
+        "decimal",
+        "string",
+        "IntPtr",
+        "UIntPtr",
+        "nint",
+        "nuint",
+    };
+
     public static ManagedApiModel ParseManagedApiMetadata(
         string text,
         IdlModel idlModel,
@@ -607,8 +630,30 @@ internal static class ManagedApiSourceEmitter
         var methodPrefix = ReadOptionalString(autoElement, "method_prefix", "Abi");
         var sectionSuffix = ReadOptionalString(autoElement, "section_suffix", "_abi_surface");
         var includeDeprecated = ReadOptionalBool(autoElement, "include_deprecated", false);
+        var publicFacade = ParseAutoAbiPublicFacade(autoElement);
 
-        return new AutoAbiSurfaceSpec(enabled, methodPrefix, sectionSuffix, includeDeprecated);
+        return new AutoAbiSurfaceSpec(enabled, methodPrefix, sectionSuffix, includeDeprecated, publicFacade);
+    }
+
+    private static AutoAbiPublicFacadeSpec ParseAutoAbiPublicFacade(JsonElement autoElement)
+    {
+        if (!autoElement.TryGetProperty("public_facade", out var publicFacadeElement) ||
+            publicFacadeElement.ValueKind == JsonValueKind.Null)
+        {
+            return AutoAbiPublicFacadeSpec.Disabled();
+        }
+
+        if (publicFacadeElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new GeneratorException("managed_api.auto_abi_surface.public_facade must be an object when present.");
+        }
+
+        var enabled = ReadOptionalBool(publicFacadeElement, "enabled", false);
+        var classSuffix = ReadOptionalString(publicFacadeElement, "class_suffix", "_abi_facade");
+        var methodPrefix = ReadOptionalString(publicFacadeElement, "method_prefix", "Raw");
+        var sectionSuffix = ReadOptionalString(publicFacadeElement, "section_suffix", "_abi_facade");
+        var allowIntPtr = ReadOptionalBool(publicFacadeElement, "allow_int_ptr", false);
+        return new AutoAbiPublicFacadeSpec(enabled, classSuffix, methodPrefix, sectionSuffix, allowIntPtr);
     }
 
     private static IReadOnlyList<AutoManagedSourceSpec> BuildAutoAbiSurfaceSources(
@@ -623,9 +668,16 @@ internal static class ManagedApiSourceEmitter
         }
 
         var sources = new List<AutoManagedSourceSpec>();
-        foreach (var handle in handlesModel.Handles
+        var knownSections = new HashSet<string>(StringComparer.Ordinal);
+        var handles = handlesModel.Handles
             .Where(item => string.Equals(item.NamespaceName, namespaceName, StringComparison.Ordinal))
-            .OrderBy(item => item.CsType, StringComparer.Ordinal))
+            .OrderBy(item => item.CsType, StringComparer.Ordinal)
+            .ToArray();
+        var publicHandleTypeNames = new HashSet<string>(
+            handles.Select(static item => item.CsType),
+            StringComparer.Ordinal);
+
+        foreach (var handle in handles)
         {
             var methods = BuildHandleAbiMethods(spec, idlModel, handle);
             if (methods.Count == 0)
@@ -633,13 +685,59 @@ internal static class ManagedApiSourceEmitter
                 continue;
             }
 
-            var sectionName = handle.CsType + spec.SectionSuffix;
-            var defaultHint = BuildManagedSectionDefaultHint(sectionName);
-            var sourceText = RenderAutoAbiSurfaceCode(namespaceName, spec, handle, methods);
-            sources.Add(new AutoManagedSourceSpec(sectionName, defaultHint, sourceText));
+            var internalSectionName = handle.CsType + spec.SectionSuffix;
+            var internalSurfaceClassName = BuildAutoSurfaceClassName(
+                handle.CsType,
+                spec.SectionSuffix,
+                "AbiSurface");
+            var internalSourceText = RenderAutoAbiSurfaceCode(
+                namespaceName,
+                internalSurfaceClassName,
+                handle,
+                methods);
+            AddAutoSource(sources, knownSections, internalSectionName, internalSourceText);
+
+            if (spec.PublicFacade.Enabled)
+            {
+                var facadeMethods = BuildPublicFacadeMethods(
+                    spec,
+                    methods,
+                    publicHandleTypeNames);
+                if (facadeMethods.Count > 0)
+                {
+                    var facadeSectionName = handle.CsType + spec.PublicFacade.SectionSuffix;
+                    var facadeClassName = BuildAutoSurfaceClassName(
+                        handle.CsType,
+                        spec.PublicFacade.ClassSuffix,
+                        "AbiFacade");
+                    var facadeSourceText = RenderAutoAbiFacadeCode(
+                        namespaceName,
+                        facadeClassName,
+                        internalSurfaceClassName,
+                        handle,
+                        facadeMethods);
+                    AddAutoSource(sources, knownSections, facadeSectionName, facadeSourceText);
+                }
+            }
         }
 
         return sources;
+    }
+
+    private static void AddAutoSource(
+        ICollection<AutoManagedSourceSpec> sources,
+        ISet<string> knownSections,
+        string sectionName,
+        string sourceText)
+    {
+        if (!knownSections.Add(sectionName))
+        {
+            throw new GeneratorException(
+                $"managed_api.auto_abi_surface produced duplicate section '{sectionName}'.");
+        }
+
+        var defaultHint = BuildManagedSectionDefaultHint(sectionName);
+        sources.Add(new AutoManagedSourceSpec(sectionName, defaultHint, sourceText));
     }
 
     private static IReadOnlyList<AutoAbiMethodSpec> BuildHandleAbiMethods(
@@ -703,7 +801,7 @@ internal static class ManagedApiSourceEmitter
             BuildPascalIdentifier(methodPrefix + "_" + methodStem, "AbiCall"),
             usedNames);
 
-        var parameterSignatures = new List<string>();
+        var parameters = new List<AutoAbiParameterSpec>();
         var invocationArguments = new List<string> { "owner.DangerousGetHandle()" };
 
         for (var index = 1; index < function.Parameters.Count; index++)
@@ -711,7 +809,7 @@ internal static class ManagedApiSourceEmitter
             var parameter = function.Parameters[index];
             var mapped = MapManagedParameter(function, parameter, idlModel);
             var parameterName = SanitizeParameterName(parameter.Name, "arg" + index);
-            parameterSignatures.Add(BuildParameterSignature(mapped, parameterName));
+            parameters.Add(new AutoAbiParameterSpec(parameterName, mapped.TypeName, mapped.Modifier));
             invocationArguments.Add(BuildInvocationArgument(mapped.Modifier, parameterName));
         }
 
@@ -719,24 +817,141 @@ internal static class ManagedApiSourceEmitter
         return new AutoAbiMethodSpec(
             methodName,
             returnType,
-            parameterSignatures,
+            parameters,
             invocationArguments,
             function.Name);
     }
 
+    private static IReadOnlyList<AutoAbiFacadeMethodSpec> BuildPublicFacadeMethods(
+        AutoAbiSurfaceSpec spec,
+        IReadOnlyList<AutoAbiMethodSpec> methods,
+        HashSet<string> publicHandleTypeNames)
+    {
+        var result = new List<AutoAbiFacadeMethodSpec>();
+        var usedNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var method in methods)
+        {
+            if (!IsPublicFacadeSignature(method, spec.PublicFacade, publicHandleTypeNames))
+            {
+                continue;
+            }
+
+            var publicMethodName = DerivePublicFacadeMethodName(
+                method.MethodName,
+                spec.MethodPrefix,
+                spec.PublicFacade.MethodPrefix);
+            publicMethodName = EnsureUniqueMethodName(publicMethodName, usedNames);
+            result.Add(new AutoAbiFacadeMethodSpec(publicMethodName, method));
+        }
+
+        return result;
+    }
+
+    private static bool IsPublicFacadeSignature(
+        AutoAbiMethodSpec method,
+        AutoAbiPublicFacadeSpec facadeSpec,
+        HashSet<string> publicHandleTypeNames)
+    {
+        if (!IsPublicTypeAllowed(method.ReturnType, facadeSpec, publicHandleTypeNames))
+        {
+            return false;
+        }
+
+        foreach (var parameter in method.Parameters)
+        {
+            if (!IsPublicTypeAllowed(parameter.TypeName, facadeSpec, publicHandleTypeNames))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsPublicTypeAllowed(
+        string typeName,
+        AutoAbiPublicFacadeSpec facadeSpec,
+        HashSet<string> publicHandleTypeNames)
+    {
+        var normalized = typeName.Trim();
+        if (normalized.StartsWith("global::", StringComparison.Ordinal))
+        {
+            normalized = normalized.Substring("global::".Length);
+        }
+
+        if (normalized.EndsWith("?", StringComparison.Ordinal))
+        {
+            normalized = normalized.Substring(0, normalized.Length - 1);
+        }
+
+        if (!facadeSpec.AllowIntPtr &&
+            (string.Equals(normalized, "IntPtr", StringComparison.Ordinal) ||
+             string.Equals(normalized, "UIntPtr", StringComparison.Ordinal) ||
+             string.Equals(normalized, "nint", StringComparison.Ordinal) ||
+             string.Equals(normalized, "nuint", StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        if (PublicScalarTypeNames.Contains(normalized))
+        {
+            return true;
+        }
+
+        if (publicHandleTypeNames.Contains(normalized))
+        {
+            return true;
+        }
+
+        var lastDot = normalized.LastIndexOf('.');
+        if (lastDot >= 0 && lastDot + 1 < normalized.Length)
+        {
+            var shortName = normalized.Substring(lastDot + 1);
+            return publicHandleTypeNames.Contains(shortName);
+        }
+
+        return false;
+    }
+
+    private static string DerivePublicFacadeMethodName(
+        string internalMethodName,
+        string internalPrefix,
+        string facadePrefix)
+    {
+        var stem = internalMethodName;
+        if (!string.IsNullOrWhiteSpace(internalPrefix) &&
+            internalMethodName.StartsWith(internalPrefix, StringComparison.Ordinal) &&
+            internalMethodName.Length > internalPrefix.Length)
+        {
+            stem = internalMethodName.Substring(internalPrefix.Length);
+        }
+
+        if (string.IsNullOrWhiteSpace(facadePrefix))
+        {
+            return BuildPascalIdentifier(stem, internalMethodName);
+        }
+
+        return BuildPascalIdentifier(facadePrefix + "_" + stem, internalMethodName);
+    }
+
+    private static string BuildAutoSurfaceClassName(string handleType, string sectionSuffix, string fallbackSuffix)
+    {
+        var sectionName = handleType + sectionSuffix;
+        var className = BuildPascalIdentifier(sectionName, handleType + fallbackSuffix);
+        if (string.Equals(className, handleType, StringComparison.Ordinal))
+        {
+            className += fallbackSuffix;
+        }
+
+        return className;
+    }
+
     private static string RenderAutoAbiSurfaceCode(
         string namespaceName,
-        AutoAbiSurfaceSpec spec,
+        string surfaceClassName,
         ManagedHandleSpec handle,
         IReadOnlyList<AutoAbiMethodSpec> methods)
     {
-        var sectionName = handle.CsType + spec.SectionSuffix;
-        var surfaceClassName = BuildPascalIdentifier(sectionName, handle.CsType + "AbiSurface");
-        if (string.Equals(surfaceClassName, handle.CsType, StringComparison.Ordinal))
-        {
-            surfaceClassName += "AbiSurface";
-        }
-
         var builder = new StringBuilder();
         AppendFileHeader(builder, namespaceName);
         builder.AppendLine($"internal static class {surfaceClassName}");
@@ -748,7 +963,7 @@ internal static class ManagedApiSourceEmitter
             AppendLine(builder, 4, $"/// ABI forwarder for <c>{method.NativeFunctionName}</c>.");
             AppendLine(builder, 4, "/// </summary>");
             var allParameters = new List<string> { $"this {handle.CsType} owner" };
-            allParameters.AddRange(method.ParameterSignatures);
+            allParameters.AddRange(method.Parameters.Select(BuildParameterSignature));
             AppendLine(builder, 4, $"internal static {method.ReturnType} {method.MethodName}({string.Join(", ", allParameters)})");
             AppendLine(builder, 4, "{");
             AppendLine(builder, 8, "if (owner is null)");
@@ -764,6 +979,60 @@ internal static class ManagedApiSourceEmitter
                 AppendLine(builder, 8, $"var result = NativeMethods.{method.NativeFunctionName}({string.Join(", ", method.InvocationArguments)});");
                 AppendLine(builder, 8, "return result;");
             }
+            AppendLine(builder, 4, "}");
+            builder.AppendLine();
+        }
+
+        builder.AppendLine("}");
+        builder.AppendLine();
+        return builder.ToString();
+    }
+
+    private static string RenderAutoAbiFacadeCode(
+        string namespaceName,
+        string facadeClassName,
+        string internalSurfaceClassName,
+        ManagedHandleSpec handle,
+        IReadOnlyList<AutoAbiFacadeMethodSpec> methods)
+    {
+        var builder = new StringBuilder();
+        AppendFileHeader(builder, namespaceName);
+        builder.AppendLine($"public static class {facadeClassName}");
+        builder.AppendLine("{");
+
+        foreach (var method in methods)
+        {
+            AppendLine(builder, 4, "/// <summary>");
+            AppendLine(builder, 4, $"/// Public facade over <c>{method.Inner.NativeFunctionName}</c>.");
+            AppendLine(builder, 4, "/// </summary>");
+            var allParameters = new List<string> { $"this {handle.CsType} owner" };
+            allParameters.AddRange(method.Inner.Parameters.Select(BuildParameterSignature));
+            AppendLine(
+                builder,
+                4,
+                $"public static {method.Inner.ReturnType} {method.PublicMethodName}({string.Join(", ", allParameters)})");
+            AppendLine(builder, 4, "{");
+
+            var forwardedArguments = method.Inner.Parameters
+                .Select(parameter => BuildInvocationArgument(parameter.Modifier, parameter.ParameterName))
+                .ToList();
+            var invocation = $"{internalSurfaceClassName}.{method.Inner.MethodName}(owner";
+            if (forwardedArguments.Count > 0)
+            {
+                invocation += ", " + string.Join(", ", forwardedArguments);
+            }
+
+            invocation += ")";
+
+            if (string.Equals(method.Inner.ReturnType, "void", StringComparison.Ordinal))
+            {
+                AppendLine(builder, 8, invocation + ";");
+            }
+            else
+            {
+                AppendLine(builder, 8, $"return {invocation};");
+            }
+
             AppendLine(builder, 4, "}");
             builder.AppendLine();
         }
@@ -874,6 +1143,12 @@ internal static class ManagedApiSourceEmitter
     {
         var modifier = string.IsNullOrWhiteSpace(spec.Modifier) ? string.Empty : spec.Modifier + " ";
         return modifier + spec.TypeName + " " + parameterName;
+    }
+
+    private static string BuildParameterSignature(AutoAbiParameterSpec parameter)
+    {
+        var modifier = string.IsNullOrWhiteSpace(parameter.Modifier) ? string.Empty : parameter.Modifier + " ";
+        return modifier + parameter.TypeName + " " + parameter.ParameterName;
     }
 
     private static string BuildInvocationArgument(string? modifier, string parameterName)
@@ -1423,12 +1698,14 @@ internal sealed class AutoAbiSurfaceSpec
         bool enabled,
         string methodPrefix,
         string sectionSuffix,
-        bool includeDeprecated)
+        bool includeDeprecated,
+        AutoAbiPublicFacadeSpec publicFacade)
     {
         Enabled = enabled;
         MethodPrefix = string.IsNullOrWhiteSpace(methodPrefix) ? "Abi" : methodPrefix.Trim();
         SectionSuffix = string.IsNullOrWhiteSpace(sectionSuffix) ? "_abi_surface" : sectionSuffix.Trim();
         IncludeDeprecated = includeDeprecated;
+        PublicFacade = publicFacade;
     }
 
     public bool Enabled { get; }
@@ -1439,13 +1716,53 @@ internal sealed class AutoAbiSurfaceSpec
 
     public bool IncludeDeprecated { get; }
 
+    public AutoAbiPublicFacadeSpec PublicFacade { get; }
+
     public static AutoAbiSurfaceSpec Disabled()
     {
         return new AutoAbiSurfaceSpec(
             enabled: false,
             methodPrefix: "Abi",
             sectionSuffix: "_abi_surface",
-            includeDeprecated: false);
+            includeDeprecated: false,
+            publicFacade: AutoAbiPublicFacadeSpec.Disabled());
+    }
+}
+
+internal sealed class AutoAbiPublicFacadeSpec
+{
+    public AutoAbiPublicFacadeSpec(
+        bool enabled,
+        string classSuffix,
+        string methodPrefix,
+        string sectionSuffix,
+        bool allowIntPtr)
+    {
+        Enabled = enabled;
+        ClassSuffix = string.IsNullOrWhiteSpace(classSuffix) ? "_abi_facade" : classSuffix.Trim();
+        MethodPrefix = methodPrefix?.Trim() ?? string.Empty;
+        SectionSuffix = string.IsNullOrWhiteSpace(sectionSuffix) ? "_abi_facade" : sectionSuffix.Trim();
+        AllowIntPtr = allowIntPtr;
+    }
+
+    public bool Enabled { get; }
+
+    public string ClassSuffix { get; }
+
+    public string MethodPrefix { get; }
+
+    public string SectionSuffix { get; }
+
+    public bool AllowIntPtr { get; }
+
+    public static AutoAbiPublicFacadeSpec Disabled()
+    {
+        return new AutoAbiPublicFacadeSpec(
+            enabled: false,
+            classSuffix: "_abi_facade",
+            methodPrefix: "Raw",
+            sectionSuffix: "_abi_facade",
+            allowIntPtr: false);
     }
 }
 
@@ -1454,13 +1771,13 @@ internal sealed class AutoAbiMethodSpec
     public AutoAbiMethodSpec(
         string methodName,
         string returnType,
-        IReadOnlyList<string> parameterSignatures,
+        IReadOnlyList<AutoAbiParameterSpec> parameters,
         IReadOnlyList<string> invocationArguments,
         string nativeFunctionName)
     {
         MethodName = methodName;
         ReturnType = returnType;
-        ParameterSignatures = parameterSignatures;
+        Parameters = parameters;
         InvocationArguments = invocationArguments;
         NativeFunctionName = nativeFunctionName;
     }
@@ -1469,11 +1786,40 @@ internal sealed class AutoAbiMethodSpec
 
     public string ReturnType { get; }
 
-    public IReadOnlyList<string> ParameterSignatures { get; }
+    public IReadOnlyList<AutoAbiParameterSpec> Parameters { get; }
 
     public IReadOnlyList<string> InvocationArguments { get; }
 
     public string NativeFunctionName { get; }
+}
+
+internal sealed class AutoAbiParameterSpec
+{
+    public AutoAbiParameterSpec(string parameterName, string typeName, string? modifier)
+    {
+        ParameterName = parameterName;
+        TypeName = typeName;
+        Modifier = modifier;
+    }
+
+    public string ParameterName { get; }
+
+    public string TypeName { get; }
+
+    public string? Modifier { get; }
+}
+
+internal sealed class AutoAbiFacadeMethodSpec
+{
+    public AutoAbiFacadeMethodSpec(string publicMethodName, AutoAbiMethodSpec inner)
+    {
+        PublicMethodName = publicMethodName;
+        Inner = inner;
+    }
+
+    public string PublicMethodName { get; }
+
+    public AutoAbiMethodSpec Inner { get; }
 }
 
 internal sealed class ManagedApiOutputHints
