@@ -1,9 +1,11 @@
-<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="PublishAot;IsAotCompatible;EnableAotAnalyzer">
+<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="PublishAot;PublishTrimmed;TrimMode;IsAotCompatible;EnableAotAnalyzer;RuntimeIdentifier;SelfContained">
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
     <IsRoslynComponent>true</IsRoslynComponent>
     <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
     <PublishAot>false</PublishAot>
+    <PublishTrimmed>false</PublishTrimmed>
+    <TrimMode>copyused</TrimMode>
     <IsAotCompatible>false</IsAotCompatible>
     <EnableAotAnalyzer>false</EnableAotAnalyzer>
   </PropertyGroup>
