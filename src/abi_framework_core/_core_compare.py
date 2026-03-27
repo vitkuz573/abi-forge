@@ -480,34 +480,44 @@ def compare_snapshots(baseline: dict[str, Any], current: dict[str, Any]) -> dict
 
 
 def print_report(report: dict[str, Any]) -> None:
+    use_color = sys.stdout.isatty()
+    GREEN  = "\033[32m" if use_color else ""
+    RED    = "\033[31m" if use_color else ""
+    YELLOW = "\033[33m" if use_color else ""
+    CYAN   = "\033[36m" if use_color else ""
+    BOLD   = "\033[1m"  if use_color else ""
+    RESET  = "\033[0m"  if use_color else ""
+
     status = report.get("status", "unknown")
-    print(f"ABI check status: {status}")
+    status_color = GREEN if status == "pass" else RED
+    print(f"ABI check status: {BOLD}{status_color}{status}{RESET}")
 
     removed = report.get("removed_symbols", [])
     added = report.get("added_symbols", [])
     changed = report.get("changed_signatures", [])
-    print(f"Removed symbols: {len(removed)}")
-    print(f"Added symbols: {len(added)}")
-    print(f"Changed signatures: {len(changed)}")
+    print(f"Removed symbols:   {RED if removed else ''}{len(removed)}{RESET if removed else ''}")
+    print(f"Added symbols:     {len(added)}")
+    print(f"Changed signatures:{RED if changed else ''} {len(changed)}{RESET if changed else ''}")
 
     classification = report.get("change_classification")
     required_bump = report.get("required_bump")
     recommended = report.get("recommended_next_version")
-    print(f"Change classification: {classification}")
-    print(f"Required bump: {required_bump}")
-    print(f"Recommended next version: {recommended}")
+    bump_color = RED if required_bump == "major" else (YELLOW if required_bump == "minor" else "")
+    print(f"Change classification: {BOLD}{classification}{RESET}")
+    print(f"Required bump:         {bump_color}{BOLD}{required_bump}{RESET}")
+    print(f"Recommended next:      {CYAN}{recommended}{RESET}")
 
     warnings = report.get("warnings", [])
     errors = report.get("errors", [])
 
     if warnings:
-        print("Warnings:")
+        print(f"{YELLOW}{BOLD}Warnings:{RESET}")
         for warning in warnings:
-            print(f"  - {warning}")
+            print(f"  {YELLOW}-{RESET} {warning}")
     if errors:
-        print("Errors:")
+        print(f"{RED}{BOLD}Errors:{RESET}")
         for error in errors:
-            print(f"  - {error}")
+            print(f"  {RED}-{RESET} {error}")
 
 
 def write_markdown_report(path: Path, report: dict[str, Any]) -> None:
@@ -645,7 +655,22 @@ def render_target_changelog_section(target_name: str, report: dict[str, Any]) ->
                 continue
             if str(detail.get("kind")) != "breaking":
                 continue
-            lines.append(f"- Struct `{struct_name}` layout changed (breaking).")
+            removed_fields = get_message_list(detail, "removed_fields")
+            added_fields = get_message_list(detail, "added_fields")
+            changed_fields = get_message_list(detail, "changed_fields")
+            if removed_fields or added_fields or changed_fields:
+                lines.append(f"- Struct `{struct_name}` layout changed (breaking):")
+                if removed_fields:
+                    lines.append("  - Removed fields:")
+                    append_markdown_list(lines, removed_fields, indent="    ")
+                if added_fields:
+                    lines.append("  - Added fields:")
+                    append_markdown_list(lines, added_fields, indent="    ")
+                if changed_fields:
+                    lines.append("  - Modified fields:")
+                    append_markdown_list(lines, changed_fields, indent="    ")
+            else:
+                lines.append(f"- Struct `{struct_name}` layout changed (breaking).")
 
     lines.append("")
     lines.append("### Additive")
@@ -688,7 +713,12 @@ def render_target_changelog_section(target_name: str, report: dict[str, Any]) ->
                 continue
             if str(detail.get("kind")) != "additive":
                 continue
-            lines.append(f"- Struct `{struct_name}` was extended (additive tail).")
+            added_fields = get_message_list(detail, "added_fields")
+            if added_fields:
+                lines.append(f"- Struct `{struct_name}` extended (additive tail):")
+                append_markdown_list(lines, added_fields, indent="  ")
+            else:
+                lines.append(f"- Struct `{struct_name}` was extended (additive tail).")
 
     warnings = get_message_list(report, "warnings")
     errors = get_message_list(report, "errors")
@@ -878,49 +908,117 @@ def get_message_list(payload: dict[str, Any], key: str) -> list[str]:
     return []
 
 
+# Typed SARIF rule catalogue.  Each tuple is (id, name, short_description, default_level).
+# Rule IDs are stable — do not renumber them; only append new entries.
+_SARIF_RULES: list[tuple[str, str, str, str]] = [
+    ("ABI001", "FunctionRemoved",       "Function removed from ABI surface",           "error"),
+    ("ABI002", "SignatureChanged",       "Function signature changed in ABI",           "error"),
+    ("ABI003", "EnumChanged",           "Enum member removed or value changed",         "error"),
+    ("ABI004", "StructLayoutChanged",   "Struct layout changed (binary incompatible)",  "error"),
+    ("ABI005", "BindingsMismatch",      "Symbol contract or binary export mismatch",    "error"),
+    ("ABI006", "VersionPolicyViolated", "ABI version policy violated",                  "error"),
+    ("ABI007", "AbiWarning",            "ABI compatibility warning",                    "warning"),
+]
+
+
+def _sarif_entry(rule_id: str, level: str, text: str, location: dict[str, Any] | None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "ruleId": rule_id,
+        "level": level,
+        "message": {"text": text},
+    }
+    if location:
+        result["locations"] = [location]
+    return result
+
+
 def build_sarif_results_for_target(target_name: str, report: dict[str, Any], source_path: str | None) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    location = None
+    location: dict[str, Any] | None = None
     if source_path:
         location = {
             "physicalLocation": {
-                "artifactLocation": {
-                    "uri": source_path,
-                },
-                "region": {
-                    "startLine": 1,
-                },
+                "artifactLocation": {"uri": source_path},
+                "region": {"startLine": 1},
             }
         }
 
-    for message in get_message_list(report, "errors"):
-        result: dict[str, Any] = {
-            "ruleId": "ABI001",
-            "level": "error",
-            "message": {
-                "text": f"[{target_name}] {message}",
-            },
-        }
-        if location:
-            result["locations"] = [location]
-        results.append(result)
+    results: list[dict[str, Any]] = []
+    tag = f"[{target_name}]"
 
+    # ABI001 — function removed
+    for sym in get_message_list(report, "removed_symbols"):
+        results.append(_sarif_entry("ABI001", "error", f"{tag} Function '{sym}' removed from ABI surface", location))
+
+    # ABI002 — signature changed
+    for sym in get_message_list(report, "changed_signatures"):
+        results.append(_sarif_entry("ABI002", "error", f"{tag} Signature of '{sym}' changed", location))
+
+    # ABI003 — enum changes
+    enum_diff = report.get("enum_diff")
+    enum_diff_obj = enum_diff if isinstance(enum_diff, dict) else {}
+    for enum_name in get_message_list(enum_diff_obj, "removed_enums"):
+        results.append(_sarif_entry("ABI003", "error", f"{tag} Enum '{enum_name}' removed", location))
+    changed_enums = enum_diff_obj.get("changed_enums")
+    if isinstance(changed_enums, dict):
+        for enum_name, detail in sorted(changed_enums.items()):
+            if not isinstance(detail, dict) or str(detail.get("kind")) != "breaking":
+                continue
+            removed_members = get_message_list(detail, "removed_members")
+            value_changed = get_message_list(detail, "value_changed")
+            if removed_members:
+                results.append(_sarif_entry("ABI003", "error",
+                    f"{tag} Enum '{enum_name}' removed members: {', '.join(removed_members)}", location))
+            if value_changed:
+                results.append(_sarif_entry("ABI003", "error",
+                    f"{tag} Enum '{enum_name}' changed values: {', '.join(value_changed)}", location))
+
+    # ABI004 — struct layout changes
+    struct_diff = report.get("struct_diff")
+    struct_diff_obj = struct_diff if isinstance(struct_diff, dict) else {}
+    for struct_name in get_message_list(struct_diff_obj, "removed_structs"):
+        results.append(_sarif_entry("ABI004", "error", f"{tag} Struct '{struct_name}' removed", location))
+    changed_structs = struct_diff_obj.get("changed_structs")
+    if isinstance(changed_structs, dict):
+        for struct_name, detail in sorted(changed_structs.items()):
+            if not isinstance(detail, dict) or str(detail.get("kind")) != "breaking":
+                continue
+            changed_fields = get_message_list(detail, "changed_fields")
+            removed_fields = get_message_list(detail, "removed_fields")
+            detail_str = ""
+            if removed_fields:
+                detail_str += f"; removed fields: {', '.join(removed_fields)}"
+            if changed_fields:
+                detail_str += f"; modified fields: {', '.join(changed_fields)}"
+            results.append(_sarif_entry("ABI004", "error",
+                f"{tag} Struct '{struct_name}' layout changed (binary incompatible){detail_str}", location))
+    layout_diff = report.get("layout_diff")
+    if isinstance(layout_diff, dict):
+        for msg in get_message_list(layout_diff, "breaking_changes"):
+            results.append(_sarif_entry("ABI004", "error", f"{tag} {msg}", location))
+
+    # ABI005/ABI006 — errors from the error list (binary/bindings mismatches and version policy)
+    for message in get_message_list(report, "errors"):
+        msg_lower = message.lower()
+        rule_id = "ABI006" if ("version" in msg_lower or "bump" in msg_lower) else "ABI005"
+        results.append(_sarif_entry(rule_id, "error", f"{tag} {message}", location))
+
+    # ABI007 — warnings (summary-level; structured entries above are preferred for specific violations)
     for message in get_message_list(report, "warnings"):
-        result = {
-            "ruleId": "ABI002",
-            "level": "warning",
-            "message": {
-                "text": f"[{target_name}] {message}",
-            },
-        }
-        if location:
-            result["locations"] = [location]
-        results.append(result)
+        results.append(_sarif_entry("ABI007", "warning", f"{tag} {message}", location))
 
     return results
 
 
 def write_sarif_report(path: Path, results: list[dict[str, Any]]) -> None:
+    rules = [
+        {
+            "id": rule_id,
+            "name": name,
+            "shortDescription": {"text": description},
+            "defaultConfiguration": {"level": level},
+        }
+        for rule_id, name, description, level in _SARIF_RULES
+    ]
     payload = {
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
@@ -930,28 +1028,7 @@ def write_sarif_report(path: Path, results: list[dict[str, Any]]) -> None:
                     "driver": {
                         "name": "abi_framework",
                         "version": TOOL_VERSION,
-                        "rules": [
-                            {
-                                "id": "ABI001",
-                                "name": "AbiFrameworkError",
-                                "shortDescription": {
-                                    "text": "ABI compatibility error",
-                                },
-                                "defaultConfiguration": {
-                                    "level": "error",
-                                },
-                            },
-                            {
-                                "id": "ABI002",
-                                "name": "AbiFrameworkWarning",
-                                "shortDescription": {
-                                    "text": "ABI compatibility warning",
-                                },
-                                "defaultConfiguration": {
-                                    "level": "warning",
-                                },
-                            },
-                        ],
+                        "rules": rules,
                     }
                 },
                 "results": results,

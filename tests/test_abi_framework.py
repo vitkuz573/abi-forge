@@ -1021,5 +1021,238 @@ typedef void (LUMENRTC_CALL *lrtc_void_cb)(void* user_data);
         self.assertTrue((output_dir / "release.attestation.json").exists())
 
 
+class SarifTests(unittest.TestCase):
+    """Tests for typed SARIF rule emission (ABI001-ABI007)."""
+
+    def _make_report(self, **kwargs: object) -> dict[str, object]:
+        """Build a minimal compare_snapshots-style report with given overrides."""
+        base: dict[str, object] = {
+            "status": "fail",
+            "change_classification": "breaking",
+            "required_bump": "major",
+            "removed_symbols": [],
+            "added_symbols": [],
+            "changed_signatures": [],
+            "errors": [],
+            "warnings": [],
+            "breaking_reasons": [],
+            "additive_reasons": [],
+            "enum_diff": {},
+            "struct_diff": {},
+        }
+        base.update(kwargs)
+        return base
+
+    def test_function_removed_emits_abi001(self) -> None:
+        report = self._make_report(removed_symbols=["my_func"])
+        results = abi_framework.build_sarif_results_for_target("demo", report, None)
+        rule_ids = [r["ruleId"] for r in results]
+        self.assertIn("ABI001", rule_ids)
+        messages = [r["message"]["text"] for r in results if r["ruleId"] == "ABI001"]
+        self.assertTrue(any("my_func" in m for m in messages))
+
+    def test_signature_changed_emits_abi002(self) -> None:
+        report = self._make_report(changed_signatures=["my_func"])
+        results = abi_framework.build_sarif_results_for_target("demo", report, None)
+        rule_ids = [r["ruleId"] for r in results]
+        self.assertIn("ABI002", rule_ids)
+
+    def test_enum_removed_emits_abi003(self) -> None:
+        report = self._make_report(enum_diff={"removed_enums": ["my_enum"]})
+        results = abi_framework.build_sarif_results_for_target("demo", report, None)
+        rule_ids = [r["ruleId"] for r in results]
+        self.assertIn("ABI003", rule_ids)
+        messages = [r["message"]["text"] for r in results if r["ruleId"] == "ABI003"]
+        self.assertTrue(any("my_enum" in m for m in messages))
+
+    def test_enum_member_removed_emits_abi003(self) -> None:
+        report = self._make_report(enum_diff={
+            "removed_enums": [],
+            "changed_enums": {
+                "State": {"kind": "breaking", "removed_members": ["STATE_GONE"], "value_changed": []}
+            },
+        })
+        results = abi_framework.build_sarif_results_for_target("demo", report, None)
+        rule_ids = [r["ruleId"] for r in results]
+        self.assertIn("ABI003", rule_ids)
+        messages = [r["message"]["text"] for r in results if r["ruleId"] == "ABI003"]
+        self.assertTrue(any("STATE_GONE" in m for m in messages))
+
+    def test_enum_value_changed_emits_abi003(self) -> None:
+        report = self._make_report(enum_diff={
+            "removed_enums": [],
+            "changed_enums": {
+                "Color": {"kind": "breaking", "removed_members": [], "value_changed": ["COLOR_RED"]}
+            },
+        })
+        results = abi_framework.build_sarif_results_for_target("demo", report, None)
+        rule_ids = [r["ruleId"] for r in results]
+        self.assertIn("ABI003", rule_ids)
+        messages = [r["message"]["text"] for r in results if r["ruleId"] == "ABI003"]
+        self.assertTrue(any("COLOR_RED" in m for m in messages))
+
+    def test_struct_layout_changed_emits_abi004(self) -> None:
+        report = self._make_report(struct_diff={
+            "removed_structs": [],
+            "changed_structs": {
+                "MyStruct": {
+                    "kind": "breaking",
+                    "removed_fields": ["old_field"],
+                    "added_fields": [],
+                    "changed_fields": [],
+                }
+            },
+        })
+        results = abi_framework.build_sarif_results_for_target("demo", report, None)
+        rule_ids = [r["ruleId"] for r in results]
+        self.assertIn("ABI004", rule_ids)
+        messages = [r["message"]["text"] for r in results if r["ruleId"] == "ABI004"]
+        self.assertTrue(any("MyStruct" in m for m in messages))
+        self.assertTrue(any("old_field" in m for m in messages))
+
+    def test_bindings_error_emits_abi005(self) -> None:
+        report = self._make_report(errors=["symbol contract mismatch: extra symbols found"])
+        results = abi_framework.build_sarif_results_for_target("demo", report, None)
+        rule_ids = [r["ruleId"] for r in results]
+        self.assertIn("ABI005", rule_ids)
+
+    def test_version_error_emits_abi006(self) -> None:
+        report = self._make_report(errors=["version bump required: breaking change with no major bump"])
+        results = abi_framework.build_sarif_results_for_target("demo", report, None)
+        rule_ids = [r["ruleId"] for r in results]
+        self.assertIn("ABI006", rule_ids)
+
+    def test_warning_emits_abi007(self) -> None:
+        report = self._make_report(warnings=["additive change without minor bump"])
+        results = abi_framework.build_sarif_results_for_target("demo", report, None)
+        rule_ids = [r["ruleId"] for r in results]
+        self.assertIn("ABI007", rule_ids)
+        entry = next(r for r in results if r["ruleId"] == "ABI007")
+        self.assertEqual(entry["level"], "warning")
+
+    def test_write_sarif_report_contains_all_rules(self) -> None:
+        import tempfile
+        results = abi_framework.build_sarif_results_for_target("demo", self._make_report(
+            removed_symbols=["f1"],
+            changed_signatures=["f2"],
+            enum_diff={"removed_enums": ["E1"], "changed_enums": {}},
+            struct_diff={"removed_structs": ["S1"], "changed_structs": {}},
+            errors=["version bump required: major", "symbol contract mismatch"],
+            warnings=["minor drift"],
+        ), None)
+        with tempfile.NamedTemporaryFile(suffix=".sarif", delete=False) as fp:
+            out_path = Path(fp.name)
+        abi_framework.write_sarif_report(out_path, results)
+        payload = json.loads(out_path.read_text())
+        rule_ids = {r["id"] for r in payload["runs"][0]["tool"]["driver"]["rules"]}
+        for expected in ("ABI001", "ABI002", "ABI003", "ABI004", "ABI005", "ABI006", "ABI007"):
+            self.assertIn(expected, rule_ids)
+        out_path.unlink(missing_ok=True)
+
+    def test_sarif_location_attached_when_source_path_given(self) -> None:
+        report = self._make_report(removed_symbols=["my_func"])
+        results = abi_framework.build_sarif_results_for_target("demo", report, "native/include/api.h")
+        entry = next(r for r in results if r["ruleId"] == "ABI001")
+        self.assertIn("locations", entry)
+        uri = entry["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+        self.assertEqual(uri, "native/include/api.h")
+
+
+class ChangelogStructFieldTests(unittest.TestCase):
+    """Tests for struct field detail in the changelog renderer."""
+
+    def _make_report(self, struct_diff: dict[str, object]) -> dict[str, object]:
+        return {
+            "status": "fail",
+            "change_classification": "breaking",
+            "required_bump": "major",
+            "baseline_abi_version": {"major": 1, "minor": 0, "patch": 0},
+            "current_abi_version": {"major": 1, "minor": 0, "patch": 0},
+            "recommended_next_version": {"major": 2, "minor": 0, "patch": 0},
+            "removed_symbols": [],
+            "added_symbols": [],
+            "changed_signatures": [],
+            "errors": [],
+            "warnings": [],
+            "breaking_reasons": [],
+            "additive_reasons": [],
+            "enum_diff": {},
+            "struct_diff": struct_diff,
+        }
+
+    def test_removed_fields_appear_in_changelog(self) -> None:
+        report = self._make_report(struct_diff={
+            "removed_structs": [],
+            "changed_structs": {
+                "Packet": {
+                    "kind": "breaking",
+                    "removed_fields": ["timestamp_ms"],
+                    "added_fields": [],
+                    "changed_fields": [],
+                }
+            },
+        })
+        lines = abi_framework.render_target_changelog_section("demo", report)
+        text = "\n".join(lines)
+        self.assertIn("Packet", text)
+        self.assertIn("timestamp_ms", text)
+        self.assertIn("Removed fields", text)
+
+    def test_added_fields_appear_in_changelog(self) -> None:
+        report = self._make_report(struct_diff={
+            "removed_structs": [],
+            "changed_structs": {
+                "Packet": {
+                    "kind": "breaking",
+                    "removed_fields": [],
+                    "added_fields": ["crc32"],
+                    "changed_fields": [],
+                }
+            },
+        })
+        lines = abi_framework.render_target_changelog_section("demo", report)
+        text = "\n".join(lines)
+        self.assertIn("crc32", text)
+        self.assertIn("Added fields", text)
+
+    def test_changed_fields_appear_in_changelog(self) -> None:
+        report = self._make_report(struct_diff={
+            "removed_structs": [],
+            "changed_structs": {
+                "Frame": {
+                    "kind": "breaking",
+                    "removed_fields": [],
+                    "added_fields": [],
+                    "changed_fields": ["flags"],
+                }
+            },
+        })
+        lines = abi_framework.render_target_changelog_section("demo", report)
+        text = "\n".join(lines)
+        self.assertIn("flags", text)
+        self.assertIn("Modified fields", text)
+
+    def test_non_breaking_struct_omitted_from_breaking_section(self) -> None:
+        report = self._make_report(struct_diff={
+            "removed_structs": [],
+            "changed_structs": {
+                "Stats": {
+                    "kind": "additive",
+                    "removed_fields": [],
+                    "added_fields": ["new_counter"],
+                    "changed_fields": [],
+                }
+            },
+        })
+        lines = abi_framework.render_target_changelog_section("demo", report)
+        breaking_idx = next(i for i, l in enumerate(lines) if "### Breaking" in l)
+        additive_idx = next(i for i, l in enumerate(lines) if "### Additive" in l)
+        breaking_text = "\n".join(lines[breaking_idx:additive_idx])
+        self.assertNotIn("Stats", breaking_text)
+        # additive section may mention it
+        additive_text = "\n".join(lines[additive_idx:])
+        self.assertIn("Stats", additive_text)
+
+
 if __name__ == "__main__":
     unittest.main()
