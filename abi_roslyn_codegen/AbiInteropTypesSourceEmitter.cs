@@ -9,47 +9,6 @@ namespace Abi.RoslynGenerator;
 
 internal static class AbiInteropTypesSourceEmitter
 {
-    private static readonly Dictionary<string, string> PrimitiveTypeMap = new(StringComparer.Ordinal)
-    {
-        ["void"] = "void",
-        ["bool"] = "bool",
-        ["char"] = "byte",
-        ["signed char"] = "sbyte",
-        ["unsigned char"] = "byte",
-        ["short"] = "short",
-        ["unsigned short"] = "ushort",
-        ["int"] = "int",
-        ["unsigned int"] = "uint",
-        ["long"] = "nint",
-        ["unsigned long"] = "nuint",
-        ["long long"] = "long",
-        ["unsigned long long"] = "ulong",
-        ["int8_t"] = "sbyte",
-        ["uint8_t"] = "byte",
-        ["int16_t"] = "short",
-        ["uint16_t"] = "ushort",
-        ["int32_t"] = "int",
-        ["uint32_t"] = "uint",
-        ["int64_t"] = "long",
-        ["uint64_t"] = "ulong",
-        ["size_t"] = "nuint",
-        ["ssize_t"] = "nint",
-        ["float"] = "float",
-        ["double"] = "double",
-    };
-
-    private static readonly HashSet<string> CSharpKeywords = new(StringComparer.Ordinal)
-    {
-        "abstract", "as", "base", "bool", "break", "byte", "case", "catch", "char", "checked", "class",
-        "const", "continue", "decimal", "default", "delegate", "do", "double", "else", "enum", "event",
-        "explicit", "extern", "false", "finally", "fixed", "float", "for", "foreach", "goto", "if",
-        "implicit", "in", "int", "interface", "internal", "is", "lock", "long", "namespace", "new",
-        "null", "object", "operator", "out", "override", "params", "private", "protected", "public",
-        "readonly", "ref", "return", "sbyte", "sealed", "short", "sizeof", "stackalloc", "static", "string",
-        "struct", "switch", "this", "throw", "true", "try", "typeof", "uint", "ulong", "unchecked",
-        "unsafe", "ushort", "using", "virtual", "void", "volatile", "while",
-    };
-
     private static readonly Regex CallbackTypedefRegex = new(
         "^typedef\\s+(?<ret>.+?)\\s*\\(\\s*(?:(?<call>[A-Za-z_][A-Za-z0-9_]*)\\s+)?\\*\\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*\\)\\s*\\((?<params>.*)\\)\\s*;?\\s*$",
         RegexOptions.Compiled
@@ -1088,7 +1047,7 @@ internal static class AbiInteropTypesSourceEmitter
     {
         var stripped = StripCTypeQualifiers(cTypeBase);
 
-        if (PrimitiveTypeMap.TryGetValue(stripped, out var primitive))
+        if (AbiTypeConstants.InteropPrimitiveTypeMap.TryGetValue(stripped, out var primitive))
         {
             return primitive;
         }
@@ -1409,7 +1368,7 @@ internal static class AbiInteropTypesSourceEmitter
             }
         }
 
-        return CSharpKeywords.Contains(candidate) ? "@" + candidate : candidate;
+        return AbiTypeConstants.CSharpKeywords.Contains(candidate) ? "@" + candidate : candidate;
     }
 }
 

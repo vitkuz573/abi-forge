@@ -7,17 +7,14 @@ from typing import Any
 def iter_strings(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value]
+    result: list[str] = []
     if isinstance(value, list):
-        result: list[str] = []
         for item in value:
             result.extend(iter_strings(item))
-        return result
-    if isinstance(value, dict):
-        result: list[str] = []
+    elif isinstance(value, dict):
         for item in value.values():
             result.extend(iter_strings(item))
-        return result
-    return []
+    return result
 
 
 def _first_capture(match: re.Match[str]) -> str:
