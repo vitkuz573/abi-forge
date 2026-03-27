@@ -14,6 +14,8 @@ namespace Abi.RoslynGenerator;
 [Generator(LanguageNames.CSharp)]
 public sealed class AbiInteropGenerator : IIncrementalGenerator
 {
+    private static readonly Regex SanitizeClassNameRegex = new("[^A-Za-z0-9_]+", RegexOptions.Compiled);
+
     private static readonly DiagnosticDescriptor MissingIdlDescriptor = new(
         id: "ABIGEN001",
         title: "ABI IDL file not found",
@@ -481,7 +483,7 @@ public sealed class AbiInteropGenerator : IIncrementalGenerator
         var effectiveClassName = string.IsNullOrWhiteSpace(className)
             ? "NativeMethods"
             : className.Trim();
-        var sanitizedClass = Regex.Replace(effectiveClassName, "[^A-Za-z0-9_]+", "_");
+        var sanitizedClass = SanitizeClassNameRegex.Replace(effectiveClassName, "_");
         if (string.IsNullOrWhiteSpace(sanitizedClass))
         {
             sanitizedClass = "NativeMethods";
