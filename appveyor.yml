@@ -1,0 +1,66 @@
+version: "{build}"
+
+max_jobs: 1
+
+image: Ubuntu2204
+
+build: off
+test: off
+
+environment:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  NUGET_XMLDOC_MODE: "skip"
+  # Set PYPI_API_TOKEN and NUGET_API_KEY in AppVeyor project settings (Encrypt data)
+
+install:
+  - sh: |
+      set -euo pipefail
+
+      if ! dotnet --list-sdks | grep -q '^10\.'; then
+        curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+        bash /tmp/dotnet-install.sh --channel 10.0 --install-dir "$HOME/.dotnet"
+      fi
+      export PATH="$HOME/.dotnet:$PATH"
+      dotnet --info
+
+      pip install build twine --break-system-packages
+
+build_script:
+  - sh: |
+      set -euo pipefail
+      export PATH="$HOME/.dotnet:$PATH"
+
+      python3 -m unittest discover -s tests -p "test_*.py"
+
+      if [ "${APPVEYOR_REPO_TAG:-false}" = "true" ]; then
+        VERSION="${APPVEYOR_REPO_TAG_NAME#v}"
+        echo "Publishing version $VERSION"
+
+        # Update version in pyproject.toml
+        sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+
+        # Build and publish Python package to PyPI
+        python3 -m build
+        twine upload dist/* \
+          --username __token__ \
+          --password "$PYPI_API_TOKEN" \
+          --skip-existing
+
+        # Build and publish NuGet package
+        dotnet pack generator_sdk/csharp/Abi.RoslynGenerator.csproj \
+          -c Release \
+          /p:Version="$VERSION" \
+          --output nupkgs
+
+        dotnet nuget push nupkgs/*.nupkg \
+          --api-key "$NUGET_API_KEY" \
+          --source https://api.nuget.org/v3/index.json \
+          --skip-duplicate
+      fi
+
+artifacts:
+  - path: dist/*
+    name: python-dist
+  - path: nupkgs/*.nupkg
+    name: nuget-packages
