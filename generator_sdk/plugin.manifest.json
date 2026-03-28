@@ -334,6 +334,43 @@
         "max_idl_schema_version": 1
       },
       "owners": ["@vitkuz573"]
+    },
+    {
+      "name": "abi_framework.managed_api",
+      "version": "1.0.0",
+      "description": "Validate managed API metadata and render native impl handle header.",
+      "entrypoint": {
+        "kind": "external",
+        "command": [
+          "python3",
+          "{repo_root}/tools/abi_framework/generator_sdk/managed_api_codegen.py",
+          "--idl",
+          "{idl}",
+          "--managed-api",
+          "{repo_root}/abi/bindings/{target}.managed_api.json",
+          "--out-native-handles",
+          "{repo_root}/native/src/{target}_impl_handles.generated.h",
+          "{check}",
+          "{dry_run}"
+        ]
+      },
+      "capabilities": {
+        "supports_check": true,
+        "supports_dry_run": true,
+        "deterministic_output": true,
+        "requires_repo_root": true,
+        "writes_managed_sources": false
+      },
+      "contracts": {
+        "inputs": [
+          {"name": "idl", "path_arg": "--idl", "required": true},
+          {"name": "managed_api", "path_arg": "--managed-api", "required": true}
+        ],
+        "outputs": [
+          {"name": "native_impl_handles_header", "path_arg": "--out-native-handles", "required": true}
+        ]
+      },
+      "owners": ["@vitkuz573"]
     }
   ]
 }

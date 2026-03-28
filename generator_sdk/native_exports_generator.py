@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 TOOL_PATH = "tools/abi_framework/generator_sdk/native_exports_generator.py"
-CORE_SRC = Path(__file__).resolve().parents[2] / "abi_codegen_core" / "src"
+CORE_SRC = Path(__file__).resolve().parents[1] / "abi_codegen_core" / "src"
 if str(CORE_SRC) not in sys.path:
     sys.path.insert(0, str(CORE_SRC))
 

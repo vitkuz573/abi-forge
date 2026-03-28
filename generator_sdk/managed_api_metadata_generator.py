@@ -11,7 +11,7 @@ from typing import Any
 TOOL_PATH = "tools/abi_framework/generator_sdk/managed_api_metadata_generator.py"
 DEFAULT_NATIVE_CALL_PATTERN = r"\bNativeMethods\.([A-Za-z_][A-Za-z0-9_]*)\b"
 
-CORE_SRC = Path(__file__).resolve().parents[2] / "abi_codegen_core" / "src"
+CORE_SRC = Path(__file__).resolve().parents[1] / "abi_codegen_core" / "src"
 if str(CORE_SRC) not in sys.path:
     sys.path.insert(0, str(CORE_SRC))
 
