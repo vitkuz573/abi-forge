@@ -249,7 +249,18 @@ def infer_param(
     if bare == "int" and param_name.lower() in ("binary", "is_binary", "is_text"):
         return "bool", f"{param_name} != 0"
 
-    # uint8_t* data buffer — generate TODO block
+    # int/uint enum detection heuristic
+    if bare in ("int", "unsigned int", "uint32_t", "int32_t") and not is_ptr:
+        if param_name.lower() in ("state", "type", "kind", "result", "error", "code"):
+            matching_enum = next(
+                (k for k in idl_enums if strip_prefix(k, symbol_prefix).endswith(f"_{param_name}")),
+                None,
+            )
+            if matching_enum:
+                enum_class = infer_class_name(matching_enum, symbol_prefix)
+                return f"{enum_class}  /* int */", f"({enum_class}){param_name}"
+
+    # uint8_t* data buffer — generate TODO block (without buffer-pair detection here)
     if bare in ("uint8_t", "unsigned char") and is_ptr:
         return "ReadOnlyMemory<byte>", f"/* TODO: copy {param_name} buffer */"
 
@@ -277,6 +288,51 @@ def _has_complex_param(typed_params: list[tuple[str, str, str]]) -> bool:
     return any("TODO" in expr for _, _, expr in typed_params)
 
 
+def detect_buffer_pairs(raw_params: list[tuple[str, str]]) -> dict[int, int]:
+    """Return {ptr_param_index: length_param_index} for uint8_t*/int pairs."""
+    pairs: dict[int, int] = {}
+    for i, (c_type, name) in enumerate(raw_params):
+        bare, is_ptr = _bare_type(c_type)
+        if is_ptr and bare in ("uint8_t", "unsigned char"):
+            for j in range(i + 1, min(i + 3, len(raw_params))):
+                next_type, next_name = raw_params[j]
+                nb, np = _bare_type(next_type)
+                if not np and nb in ("int", "size_t", "uint32_t", "int32_t") and (
+                    "length" in next_name.lower() or "len" in next_name.lower()
+                    or "size" in next_name.lower() or "count" in next_name.lower()
+                ):
+                    pairs[i] = j
+                    break
+    return pairs
+
+
+def build_buffer_copy_lines(
+    managed_name: str,
+    ptr_name: str,
+    len_name: str,
+    other_params: list[tuple[str, str, str]],
+) -> list[str]:
+    """Generate ReadOnlyMemory<byte> copy pattern."""
+    other_args = ", ".join(expr for _, _, expr in other_params)
+    invoke_args = "data" + (f", {other_args}" if other_args else "")
+    param_names = ["ud", ptr_name, len_name] + [name for _, name, _ in other_params]
+    lam = "(" + ", ".join(param_names) + ")"
+    lines = [
+        f"{lam} =>",
+        "{",
+        f"    if ({ptr_name} == IntPtr.Zero || {len_name} <= 0)",
+        "    {",
+        f"        {managed_name}?.Invoke(ReadOnlyMemory<byte>.Empty{', ' + other_args if other_args else ''});",
+        "        return;",
+        "    }",
+        f"    var data = GC.AllocateUninitializedArray<byte>((int){len_name});",
+        f"    Marshal.Copy({ptr_name}, data, 0, (int){len_name});",
+        f"    {managed_name}?.Invoke({invoke_args});",
+        "}",
+    ]
+    return lines
+
+
 def build_assignment_lines(
     managed_name: str,
     typedef_decl: str,
@@ -290,10 +346,34 @@ def build_assignment_lines(
         # No params beyond user_data: simple nullary invoke
         return [f"(ud) => {managed_name}?.Invoke()"]
 
+    # Detect buffer pairs before processing
+    buffer_pairs = detect_buffer_pairs(raw_params)
+    # Indices that are length params (consumed by buffer pairs)
+    len_indices = set(buffer_pairs.values())
+
     typed: list[tuple[str, str, str]] = []  # (managed_type, c_name, marshal_expr)
-    for c_type, name in raw_params:
+    for idx, (c_type, name) in enumerate(raw_params):
+        if idx in len_indices:
+            # Skip length param — it's absorbed into ReadOnlyMemory
+            continue
         m_type, expr = infer_param(c_type, name, idl_enums, opaque_types, symbol_prefix)
         typed.append((m_type, name, expr))
+
+    # If there are buffer pairs, generate the Marshal.Copy pattern
+    if buffer_pairs:
+        # Use the first buffer pair for the multi-line pattern
+        ptr_idx = next(iter(buffer_pairs))
+        len_idx = buffer_pairs[ptr_idx]
+        _, ptr_name = raw_params[ptr_idx]
+        _, len_name = raw_params[len_idx]
+        # Other params: everything except ptr and len indices
+        other: list[tuple[str, str, str]] = []
+        for idx, (c_type, name) in enumerate(raw_params):
+            if idx == ptr_idx or idx == len_idx:
+                continue
+            m_type, expr = infer_param(c_type, name, idl_enums, opaque_types, symbol_prefix)
+            other.append((m_type, name, expr))
+        return build_buffer_copy_lines(managed_name, ptr_name, len_name, other)
 
     lam_params = _build_lambda_params(typed)
     if _has_complex_param(typed):
@@ -313,11 +393,38 @@ def build_assignment_lines(
         return [f"{lam_params} => {invoke}"]
 
 
-def build_managed_type_signature(typed_params: list[tuple[str, str, str]]) -> str:
-    """Build Action<...> type from typed params."""
+def build_managed_type_signature(
+    typed_params: list[tuple[str, str, str]],
+    raw_params: list[tuple[str, str]] | None = None,
+) -> str:
+    """Build Action<...> type from typed params.
+
+    When raw_params is provided, buffer pairs are detected and the length param
+    is removed from the managed Action<> signature (its size is encoded in
+    ReadOnlyMemory<byte>).
+    """
     if not typed_params:
         return "Action?"
-    type_args = ", ".join(m_type for m_type, _, _ in typed_params)
+
+    if raw_params is not None:
+        buffer_pairs = detect_buffer_pairs(raw_params)
+        len_indices = set(buffer_pairs.values())
+        # Rebuild typed without len params, replacing ptr param type with ReadOnlyMemory<byte>
+        filtered: list[tuple[str, str, str]] = []
+        for idx, (c_type, name) in enumerate(raw_params):
+            if idx in len_indices:
+                continue
+            if idx in buffer_pairs:
+                filtered.append(("ReadOnlyMemory<byte>", name, ""))
+            else:
+                matching = next((t for t in typed_params if t[1] == name), None)
+                if matching:
+                    filtered.append(matching)
+        typed_params = filtered
+
+    if not typed_params:
+        return "Action?"
+    type_args = ", ".join(m_type.split("  /*")[0].strip() for m_type, _, _ in typed_params)
     return f"Action<{type_args}>?"
 
 
@@ -373,7 +480,7 @@ def build_callback_entry(
             m_type, expr = infer_param(c_type, pname, idl_enums, opaque_types, symbol_prefix)
             typed.append((m_type, pname, expr))
 
-        managed_type = build_managed_type_signature(typed) if typedef_decl else "Action</* TODO */>?"
+        managed_type = build_managed_type_signature(typed, raw_params) if typedef_decl else "Action</* TODO */>?"
 
         assignment_lines = (
             build_assignment_lines(managed_name, typedef_decl, idl_enums, opaque_types, symbol_prefix)

@@ -252,3 +252,74 @@ def command_scaffold_managed_bindings(args: argparse.Namespace) -> int:
     return status
 
 
+def _load_generator_module(args: argparse.Namespace, module_name: str) -> Any:
+    """Load a generator_sdk module, searching standard paths."""
+    generator_sdk = Path(__file__).resolve().parents[3] / "generator_sdk"
+    if str(generator_sdk) not in sys.path:
+        sys.path.insert(0, str(generator_sdk))
+    try:
+        import importlib
+        return importlib.import_module(module_name)
+    except ImportError:
+        repo_root = Path(getattr(args, "repo_root", ".")).resolve()
+        sdk_path = repo_root / "tools" / "abi_framework" / "generator_sdk"
+        if str(sdk_path) not in sys.path:
+            sys.path.insert(0, str(sdk_path))
+        import importlib
+        return importlib.import_module(module_name)
+
+
+def command_generate_python_bindings(args: argparse.Namespace) -> int:
+    """Generate Python ctypes bindings from IDL JSON."""
+    import json
+    from abi_codegen_core.common import write_if_changed  # type: ignore[import]
+
+    CORE_SRC = Path(__file__).resolve().parents[4] / "abi_codegen_core" / "src"
+    if str(CORE_SRC) not in sys.path:
+        sys.path.insert(0, str(CORE_SRC))
+
+    mod = _load_generator_module(args, "python_bindings_generator")
+
+    idl_path = Path(args.idl).resolve()
+    out_path = Path(args.out).resolve()
+    check = getattr(args, "check", False)
+    dry_run = getattr(args, "dry_run", False)
+
+    with idl_path.open("r", encoding="utf-8") as f:
+        idl = json.load(f)
+
+    content = mod.generate_bindings(idl, getattr(args, "symbol_prefix", None))
+
+    status = write_if_changed(out_path, content, check, dry_run)
+    if status == 0 and not check and not dry_run:
+        print(f"Generated Python ctypes bindings: {out_path}")
+    return status
+
+
+def command_generate_rust_ffi(args: argparse.Namespace) -> int:
+    """Generate Rust FFI bindings from IDL JSON."""
+    import json
+    from abi_codegen_core.common import write_if_changed  # type: ignore[import]
+
+    CORE_SRC = Path(__file__).resolve().parents[4] / "abi_codegen_core" / "src"
+    if str(CORE_SRC) not in sys.path:
+        sys.path.insert(0, str(CORE_SRC))
+
+    mod = _load_generator_module(args, "rust_ffi_generator")
+
+    idl_path = Path(args.idl).resolve()
+    out_path = Path(args.out).resolve()
+    check = getattr(args, "check", False)
+    dry_run = getattr(args, "dry_run", False)
+
+    with idl_path.open("r", encoding="utf-8") as f:
+        idl = json.load(f)
+
+    content = mod.generate_rust_ffi(idl, getattr(args, "symbol_prefix", None))
+
+    status = write_if_changed(out_path, content, check, dry_run)
+    if status == 0 and not check and not dry_run:
+        print(f"Generated Rust FFI bindings: {out_path}")
+    return status
+
+

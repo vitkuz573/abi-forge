@@ -7,11 +7,14 @@ from .core import AbiFrameworkError
 from .commands import (
     command_benchmark,
     command_benchmark_gate,
+    command_bootstrap,
     command_changelog,
     command_codegen,
     command_diff,
     command_doctor,
     command_generate,
+    command_generate_python_bindings,
+    command_generate_rust_ffi,
     command_init_target,
     command_list_targets,
     command_regen_baselines,
@@ -19,6 +22,7 @@ from .commands import (
     command_scaffold_managed_api,
     command_scaffold_managed_bindings,
     command_snapshot,
+    command_status,
     command_sync,
     command_validate_plugin_manifest,
     command_verify,
@@ -325,6 +329,51 @@ def build_parser() -> argparse.ArgumentParser:
     scaffold_bindings.add_argument("--check", action="store_true")
     scaffold_bindings.add_argument("--dry-run", action="store_true")
     scaffold_bindings.set_defaults(func=command_scaffold_managed_bindings)
+
+    # bootstrap command
+    bootstrap = sub.add_parser("bootstrap", help="Full setup pipeline for a new library target.")
+    bootstrap.add_argument("--repo-root", default=".")
+    bootstrap.add_argument("--config", required=True)
+    bootstrap.add_argument("--target", required=True)
+    bootstrap.add_argument("--header-path", required=True)
+    bootstrap.add_argument("--namespace", required=True, help="C# namespace for generated code.")
+    bootstrap.add_argument("--api-macro", default="", help="Export macro (default: <TARGET>_API).")
+    bootstrap.add_argument("--call-macro", default="", help="Calling convention macro.")
+    bootstrap.add_argument("--symbol-prefix", default="", help="Symbol prefix.")
+    bootstrap.add_argument("--version-major-macro", default="", help="Major version macro.")
+    bootstrap.add_argument("--version-minor-macro", default="", help="Minor version macro.")
+    bootstrap.add_argument("--version-patch-macro", default="", help="Patch version macro.")
+    bootstrap.add_argument("--binary-path", help="Native binary path.")
+    bootstrap.add_argument("--generate-python", action="store_true", help="Also generate Python ctypes bindings.")
+    bootstrap.add_argument("--generate-rust", action="store_true", help="Also generate Rust FFI bindings.")
+    bootstrap.add_argument("--force", action="store_true", help="Overwrite existing target.")
+    bootstrap.set_defaults(func=command_bootstrap)
+
+    # status command
+    status = sub.add_parser("status", help="Show ABI setup health dashboard.")
+    status.add_argument("--repo-root", default=".")
+    status.add_argument("--config", required=True)
+    status.add_argument("--target", required=True, help="Target name from config.")
+    status.add_argument("--skip-binary", action="store_true")
+    status.set_defaults(func=command_status)
+
+    # generate-python-bindings command
+    gen_py = sub.add_parser("generate-python-bindings", help="Generate Python ctypes bindings from IDL.")
+    gen_py.add_argument("--idl", required=True)
+    gen_py.add_argument("--out", required=True)
+    gen_py.add_argument("--symbol-prefix", default=None)
+    gen_py.add_argument("--check", action="store_true")
+    gen_py.add_argument("--dry-run", action="store_true")
+    gen_py.set_defaults(func=command_generate_python_bindings)
+
+    # generate-rust-ffi command
+    gen_rust = sub.add_parser("generate-rust-ffi", help="Generate Rust FFI bindings from IDL.")
+    gen_rust.add_argument("--idl", required=True)
+    gen_rust.add_argument("--out", required=True)
+    gen_rust.add_argument("--symbol-prefix", default=None)
+    gen_rust.add_argument("--check", action="store_true")
+    gen_rust.add_argument("--dry-run", action="store_true")
+    gen_rust.set_defaults(func=command_generate_rust_ffi)
 
     return parser
 

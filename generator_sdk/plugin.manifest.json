@@ -206,6 +206,70 @@
         "max_idl_schema_version": 1
       },
       "owners": ["@vitkuz573"]
+    },
+    {
+      "name": "abi_framework.python_bindings",
+      "version": "1.0.0",
+      "description": "Generate Python ctypes bindings from IDL. Works for any C library.",
+      "entrypoint": {
+        "kind": "external",
+        "command": [
+          "python3",
+          "{repo_root}/tools/abi_framework/generator_sdk/python_bindings_generator.py",
+          "--idl", "{idl}",
+          "--out", "{repo_root}/abi/generated/{target}/{target}_ctypes.py",
+          "{check}",
+          "{dry_run}"
+        ]
+      },
+      "capabilities": {
+        "supports_check": true,
+        "supports_dry_run": true,
+        "deterministic_output": true,
+        "requires_repo_root": true,
+        "writes_managed_sources": false
+      },
+      "contracts": {
+        "inputs": [{"name": "idl", "path_arg": "--idl", "required": true}],
+        "outputs": [{"name": "python_bindings", "path_arg": "--out", "required": true}]
+      },
+      "compatibility": {
+        "min_idl_schema_version": 1,
+        "max_idl_schema_version": 1
+      },
+      "owners": ["@vitkuz573"]
+    },
+    {
+      "name": "abi_framework.rust_ffi",
+      "version": "1.0.0",
+      "description": "Generate Rust FFI bindings from IDL. Works for any C library.",
+      "entrypoint": {
+        "kind": "external",
+        "command": [
+          "python3",
+          "{repo_root}/tools/abi_framework/generator_sdk/rust_ffi_generator.py",
+          "--idl", "{idl}",
+          "--out", "{repo_root}/abi/generated/{target}/{target}_ffi.rs",
+          "{check}",
+          "{dry_run}"
+        ]
+      },
+      "capabilities": {
+        "supports_check": true,
+        "supports_dry_run": true,
+        "deterministic_output": true,
+        "requires_repo_root": true,
+        "writes_managed_sources": false
+      },
+      "contracts": {
+        "inputs": [{"name": "idl", "path_arg": "--idl", "required": true}],
+        "outputs": [{"name": "rust_ffi", "path_arg": "--out", "required": true}]
+      },
+      "compatibility": {
+        "min_idl_schema_version": 1,
+        "max_idl_schema_version": 1
+      },
+      "owners": ["@vitkuz573"]
     }
   ]
 }

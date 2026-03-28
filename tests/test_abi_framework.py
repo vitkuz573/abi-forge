@@ -1923,5 +1923,249 @@ class ScaffoldV2Tests(unittest.TestCase):
         self.assertNotIn("retain", track)
 
 
+class MultiLanguageCodegenTests(unittest.TestCase):
+    """Tests for Python ctypes and Rust FFI binding generators."""
+
+    def setUp(self) -> None:
+        sdk_path = Path(__file__).resolve().parents[1] / "generator_sdk"
+        if str(sdk_path) not in sys.path:
+            sys.path.insert(0, str(sdk_path))
+        import python_bindings_generator as py_gen
+        import rust_ffi_generator as rs_gen
+        import managed_api_scaffold_generator as scaffold_mod
+        self.py_gen = py_gen
+        self.rs_gen = rs_gen
+        self.scaffold_mod = scaffold_mod
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _make_minimal_idl(
+        self,
+        target: str = "foo",
+        symbol_prefix: str = "foo_",
+        opaque_types: dict | None = None,
+        structs: dict | None = None,
+        cb_typedefs: list | None = None,
+        enums: dict | None = None,
+        functions: list | None = None,
+    ) -> dict:
+        return {
+            "target": target,
+            "codegen": {"symbol_prefix": symbol_prefix},
+            "functions": functions or [],
+            "header_types": {
+                "structs": structs or {},
+                "callback_typedefs": cb_typedefs or [],
+                "enums": enums or {},
+                "opaque_types": [],
+                "opaque_type_declarations": [],
+                "constants": {},
+            },
+            "bindings": {
+                "interop": {
+                    "opaque_types": opaque_types or {},
+                    "callback_struct_suffixes": ["_callbacks_t"],
+                }
+            },
+        }
+
+    def test_python_bindings_generates_valid_python(self) -> None:
+        """generate_bindings produces syntactically valid Python."""
+        import ast
+        idl = self._make_minimal_idl(
+            target="mylib",
+            symbol_prefix="mylib_",
+            functions=[
+                {"name": "mylib_version", "c_return_type": "uint32_t", "parameters": []}
+            ],
+        )
+        content = self.py_gen.generate_bindings(idl)
+        # Should not raise
+        try:
+            ast.parse(content)
+        except SyntaxError as e:
+            self.fail(f"Generated Python is not valid: {e}\n---\n{content[:500]}")
+
+    def test_python_bindings_enums(self) -> None:
+        """IDL enum produces IntEnum class with correct members."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            enums={
+                "foo_color": {
+                    "members": [
+                        {"name": "FOO_COLOR_RED", "value": 0},
+                        {"name": "FOO_COLOR_GREEN", "value": 1},
+                        {"name": "FOO_COLOR_BLUE", "value": 2},
+                    ]
+                }
+            },
+        )
+        content = self.py_gen.generate_bindings(idl)
+        self.assertIn("class Color(IntEnum):", content)
+        self.assertIn("RED = 0", content)
+        self.assertIn("GREEN = 1", content)
+        self.assertIn("BLUE = 2", content)
+
+    def test_python_bindings_opaque_handles(self) -> None:
+        """IDL opaque_type produces a Handle class subclassing c_void_p."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            opaque_types={
+                "foo_session_t": {"release": "foo_session_release"}
+            },
+        )
+        content = self.py_gen.generate_bindings(idl)
+        self.assertIn("class SessionHandle(ctypes.c_void_p): pass", content)
+
+    def test_python_bindings_function_grouped_under_handle(self) -> None:
+        """Function whose first param is an opaque handle becomes a method on the wrapper class."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            opaque_types={
+                "foo_session_t": {"release": "foo_session_release"}
+            },
+            functions=[
+                {
+                    "name": "foo_session_release",
+                    "c_return_type": "void",
+                    "parameters": [{"c_type": "foo_session_t*", "name": "session"}],
+                },
+                {
+                    "name": "foo_session_get_id",
+                    "c_return_type": "uint32_t",
+                    "parameters": [{"c_type": "foo_session_t*", "name": "session"}],
+                },
+            ],
+        )
+        content = self.py_gen.generate_bindings(idl)
+        # Should have a Session wrapper class
+        self.assertIn("class Session:", content)
+        # get_id method should appear
+        self.assertIn("def get_id(", content)
+
+    def test_rust_ffi_generates_enum(self) -> None:
+        """IDL enum produces #[repr(C)] pub enum in Rust output."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            enums={
+                "foo_state": {
+                    "members": [
+                        {"name": "FOO_STATE_IDLE", "value": 0},
+                        {"name": "FOO_STATE_RUNNING", "value": 1},
+                    ]
+                }
+            },
+        )
+        content = self.rs_gen.generate_rust_ffi(idl)
+        self.assertIn("#[repr(C)]", content)
+        self.assertIn("pub enum State {", content)
+        self.assertIn("Idle = 0,", content)
+        self.assertIn("Running = 1,", content)
+
+    def test_rust_ffi_generates_opaque_handle(self) -> None:
+        """IDL opaque_type produces zero-size struct and pointer type alias."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            opaque_types={
+                "foo_session_t": {"release": "foo_session_release"}
+            },
+        )
+        content = self.rs_gen.generate_rust_ffi(idl)
+        self.assertIn("pub struct FooSession", content)
+        self.assertIn("pub type SessionPtr = *mut FooSession;", content)
+
+    def test_rust_ffi_generates_extern_block(self) -> None:
+        """IDL function appears in extern C block with correct signature."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            functions=[
+                {
+                    "name": "foo_add",
+                    "c_return_type": "int32_t",
+                    "parameters": [
+                        {"c_type": "int32_t", "name": "a"},
+                        {"c_type": "int32_t", "name": "b"},
+                    ],
+                },
+            ],
+        )
+        content = self.rs_gen.generate_rust_ffi(idl)
+        self.assertIn('extern "C"', content)
+        self.assertIn("pub fn foo_add(", content)
+        self.assertIn("-> i32", content)
+
+    def test_scaffold_buffer_pair_detection(self) -> None:
+        """uint8_t* + int length params → ReadOnlyMemory<byte> marshal code."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            structs={
+                "foo_data_callbacks_t": {
+                    "fields": [
+                        {"name": "on_data", "declaration": "foo_data_cb on_data"},
+                    ]
+                }
+            },
+            cb_typedefs=[
+                {
+                    "name": "foo_data_cb",
+                    "declaration": "typedef void (FOO_CALL *foo_data_cb)(void* user_data, const uint8_t* data, int data_length);",
+                }
+            ],
+        )
+        result = self.scaffold_mod.scaffold(idl, "FooLib", None)
+        cbs = result["callbacks"]
+        self.assertEqual(len(cbs), 1)
+        fields = cbs[0]["fields"]
+        self.assertEqual(len(fields), 1)
+        f = fields[0]
+        # managed_type should be Action<ReadOnlyMemory<byte>>?  (length param absorbed)
+        self.assertIn("ReadOnlyMemory<byte>", f["managed_type"])
+        # Length param should NOT appear in managed_type
+        self.assertNotIn("int", f["managed_type"])
+        # assignment_lines should contain Marshal.Copy
+        all_lines = "\n".join(f["assignment_lines"])
+        self.assertIn("Marshal.Copy", all_lines)
+        self.assertIn("GC.AllocateUninitializedArray", all_lines)
+
+    def test_scaffold_int_state_enum_detection(self) -> None:
+        """int state param with matching IDL enum gets cast expression."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            enums={
+                "foo_data_channel_state": {
+                    "members": [
+                        {"name": "FOO_DATA_CHANNEL_STATE_OPEN", "value": 0},
+                    ]
+                }
+            },
+            structs={
+                "foo_channel_callbacks_t": {
+                    "fields": [
+                        {"name": "on_state_change", "declaration": "foo_state_cb on_state_change"},
+                    ]
+                }
+            },
+            cb_typedefs=[
+                {
+                    "name": "foo_state_cb",
+                    "declaration": "typedef void (FOO_CALL *foo_state_cb)(void* user_data, int state);",
+                }
+            ],
+        )
+        result = self.scaffold_mod.scaffold(idl, "FooLib", None)
+        cbs = result["callbacks"]
+        self.assertEqual(len(cbs), 1)
+        fields = cbs[0]["fields"]
+        self.assertEqual(len(fields), 1)
+        f = fields[0]
+        # managed_type should use DataChannelState (not int)
+        self.assertIn("DataChannelState", f["managed_type"])
+        # assignment_lines should contain a cast
+        all_lines = "\n".join(f["assignment_lines"])
+        self.assertIn("(DataChannelState)", all_lines)
+
+
 if __name__ == "__main__":
     unittest.main()
