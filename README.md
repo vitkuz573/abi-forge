@@ -1,285 +1,144 @@
-# abi_framework
+# abi-forge
 
-`abi_framework` is a config-driven, language-agnostic ABI governance tool.
+**Reusable ABI governance and polyglot binding generator for C shared libraries.**
 
-## Project structure
-
-- `tools/abi_framework/abi_framework.py`  
-  CLI entrypoint.
-- `tools/abi_framework/src/abi_framework_core/core.py`  
-  Aggregated domain API re-exporting split core modules.
-- `tools/abi_framework/src/abi_framework_core/_core_*.py`  
-  ABI engine internals split by responsibility: parsing/validation, codegen, snapshot, compare/reporting, policy, orchestration.
-- `tools/abi_framework/src/abi_framework_core/commands/`  
-  Command orchestration split by domain:
-  `generation.py`, `verification.py`, `governance.py`, `performance.py`, `release.py`, `targets.py`.
-- `tools/abi_framework/src/abi_framework_core/cli.py`  
-  CLI argument routing and exit-code behavior.
-- `tools/abi_framework/ARCHITECTURE.md`  
-  Architectural boundaries and extension rules.
+From a single C header, abi-forge produces a versioned IDL snapshot and generates bindings for every language you need — with built-in breakage detection and governance.
 
 ## What it does
 
-- Extracts C ABI surface from headers (`api_macro` + `call_macro` + `symbol_prefix`).
-- Captures ABI type surface from headers:
-  - `typedef enum ...`
-  - `typedef struct ...`
-- Optionally checks binary exports (`.so` / `.dylib` / `.dll`).
-- Compares current ABI against baselines and classifies changes:
-  - `none`
-  - `additive`
-  - `breaking`
-- Enforces ABI semantic-version policy from header macros.
-- Generates ABI IDL JSON from the ABI header (schema v1).
-- Can generate native ABI artifacts from IDL:
-  - C header (`native/include/...`)
-  - linker export map (`.map`)
-- Runs language generator plugins from config (`bindings.generators`).
-- Supports parser backends (`regex`, `clang_preprocess`) for ABI extraction.
-- Supports policy rules, waiver metadata requirements, TTL guardrails, and waiver audits.
-- Supports multi-target configs, changelog output, SARIF output, and release pipeline orchestration.
+| Stage | What happens |
+|-------|-------------|
+| **Parse** | Clang-preprocesses your C header into a stable IDL JSON snapshot |
+| **Govern** | Diffs every new snapshot against the baseline; flags removals, signature changes, enum shifts as typed errors (ABI001–ABI007, SARIF-compatible) |
+| **Generate** | Runs your chosen language generators from the IDL: C#, Python, Rust, TypeScript, Go |
+| **Enforce** | CI fails on ABI regressions; waivers require explicit approval with TTL |
 
-## Core commands
+## Language targets
+
+| Language | Output | Mechanism |
+|----------|--------|-----------|
+| **C# (.NET)** | P/Invoke + SafeHandle wrappers + async layer | Roslyn source generator (`abi_roslyn_codegen/`) |
+| **Python** | ctypes module with IntEnum, OOP handles, CFUNCTYPE | `generator_sdk/python_bindings_generator.py` |
+| **Rust** | `#[repr(C)]` enums + `extern "C"` block | `generator_sdk/rust_ffi_generator.py` |
+| **TypeScript** | ffi-napi + OOP wrappers with `[Symbol.dispose]` | `generator_sdk/typescript_bindings_generator.py` |
+| **Go** | cgo package with struct wrappers and `runtime.SetFinalizer` | `generator_sdk/go_bindings_generator.py` |
+
+## Real-world example
+
+[LumenRTC](https://github.com/vitkuz573/LumenRTC) — a .NET wrapper over `libwebrtc` — uses abi-forge to govern its C ABI and generate all language bindings from a single IDL snapshot. See `abi/config.json` there for a complete production configuration.
+
+## Quick start
+
+### Requirements
+
+- Python 3.10+
+- clang (for header parsing)
+- .NET SDK 10+ (optional, only for C# bindings)
+
+### Bootstrap a new target
 
 ```bash
-# Snapshot one target
-python3 tools/abi_framework/abi_framework.py snapshot \
-  --repo-root . \
-  --config abi/config.json \
-  --target lumenrtc \
-  --skip-binary
+# Add abi-forge as a submodule
+git submodule add https://github.com/vitkuz573/abi-forge.git tools/abi_framework
 
-# Verify one target against baseline
-python3 tools/abi_framework/abi_framework.py verify \
-  --repo-root . \
-  --config abi/config.json \
-  --target lumenrtc \
-  --baseline abi/baselines/lumenrtc.json \
-  --skip-binary
+# Bootstrap: scaffolds abi/config.json + initial metadata
+python3 tools/abi_framework/abi_framework.py bootstrap \
+  --target mylib \
+  --header path/to/mylib.h \
+  --namespace MyLib \
+  --generate-python \
+  --generate-rust
 
-# Verify all targets
-python3 tools/abi_framework/abi_framework.py verify-all \
-  --repo-root . \
-  --config abi/config.json \
-  --skip-binary \
-  --output-dir artifacts/abi
-
-# Generate ABI IDL for one/all targets
+# Parse header → IDL snapshot
 python3 tools/abi_framework/abi_framework.py generate \
-  --repo-root . \
-  --config abi/config.json \
-  --skip-binary
+  --config abi/config.json --skip-binary
 
-# Run full codegen (IDL + configured generators)
+# Generate all bindings from IDL
 python3 tools/abi_framework/abi_framework.py codegen \
-  --repo-root . \
-  --config abi/config.json \
-  --skip-binary \
-  --check
+  --config abi/config.json --skip-binary
 
-# Sync generated ABI artifacts and optionally baselines
-python3 tools/abi_framework/abi_framework.py sync \
-  --repo-root . \
-  --config abi/config.json \
-  --skip-binary
-
-# Benchmark ABI pipeline
-python3 tools/abi_framework/abi_framework.py benchmark \
-  --repo-root . \
-  --config abi/config.json \
-  --skip-binary \
-  --iterations 3 \
-  --output artifacts/abi/benchmark.report.json
-
-# Enforce benchmark budgets
-python3 tools/abi_framework/abi_framework.py benchmark-gate \
-  --report artifacts/abi/benchmark.report.json \
-  --budget abi/benchmark_budget.json \
-  --output artifacts/abi/benchmark.gate.report.json
-
-# Validate plugin manifests auto-discovered from config generators
-python3 tools/abi_framework/abi_framework.py validate-plugin-manifest \
-  --repo-root . \
-  --config abi/config.json
-
-# Validate explicit plugin manifest file(s)
-python3 tools/abi_framework/abi_framework.py validate-plugin-manifest \
-  --manifest tools/lumenrtc_codegen/plugin.manifest.json \
-  --print-json
-
-# Audit waiver expiry/metadata
-python3 tools/abi_framework/abi_framework.py waiver-audit \
-  --config abi/config.json \
-  --fail-on-expired \
-  --fail-on-missing-metadata
-
-# End-to-end release preparation pipeline
-python3 tools/abi_framework/abi_framework.py release-prepare \
-  --repo-root . \
-  --config abi/config.json \
-  --skip-binary \
-  --release-tag v1.2.3 \
-  --emit-sbom \
-  --emit-attestation \
-  --output-dir artifacts/abi/release
+# Lock current IDL as baseline (first time)
+python3 tools/abi_framework/abi_framework.py generate-baseline --target mylib
 ```
 
-## Config model
+### ABI governance in CI
 
-```json
+```bash
+# Fail on regressions
+python3 tools/abi_framework/abi_framework.py check \
+  --config abi/config.json --skip-binary
+
+# Full SARIF report for GitHub code scanning
+python3 tools/abi_framework/abi_framework.py check-all \
+  --config abi/config.json --skip-binary --sarif-out abi-report.sarif
+```
+
+### Health dashboard
+
+```bash
+python3 tools/abi_framework/abi_framework.py status --config abi/config.json
+```
+
+## Repository structure
+
+```
+abi-forge/
+├── abi_framework.py            # CLI entry point
+├── src/abi_framework_core/     # core: parse, diff, snapshot, policy, orchestration
+│   └── commands/               # subcommands: generate, codegen, check, release, status, …
+├── generator_sdk/              # language generators (Python, Rust, TypeScript, Go, C#-scaffold)
+│   └── plugin.manifest.json    # plugin declarations for all built-in generators
+├── abi_codegen_core/           # shared codegen primitives (native exports, required functions)
+├── abi_roslyn_codegen/         # Roslyn source generator for C# P/Invoke + managed API
+├── tests/                      # 99 tests covering orchestration, generators, governance
+└── schemas/                    # JSON schemas for IDL, config, managed_api
+```
+
+## Config overview (`abi/config.json`)
+
+```jsonc
 {
-  "policy": {
-    "waiver_requirements": {
-      "require_owner": true,
-      "require_reason": true,
-      "require_expires_utc": true,
-      "require_approved_by": true,
-      "require_ticket": true,
-      "max_ttl_days": 90,
-      "warn_expiring_within_days": 21
-    }
-  },
   "targets": {
-    "my_target": {
-      "baseline_path": "abi/baselines/my_target.json",
+    "mylib": {
       "header": {
-        "path": "native/include/my_api.h",
-        "api_macro": "MY_API",
-        "call_macro": "MY_CALL",
-        "symbol_prefix": "my_",
-        "version_macros": {
-          "major": "MY_ABI_VERSION_MAJOR",
-          "minor": "MY_ABI_VERSION_MINOR",
-          "patch": "MY_ABI_VERSION_PATCH"
-        },
-        "parser": {
-          "backend": "clang_preprocess",
-          "compiler": "clang",
-          "compiler_candidates": ["clang", "clang-18", "clang-17", "clang++"],
-          "args": ["-D_GNU_SOURCE"],
-          "include_dirs": ["native/include"],
-          "fallback_to_regex": true
-        }
-      },
-      "policy": {
-        "max_allowed_classification": "breaking",
-        "rules": [
-          {
-            "id": "no_removed_symbols",
-            "severity": "error",
-            "message": "Removing symbols is prohibited.",
-            "when": { "removed_symbols_count_gt": 0 }
-          }
-        ],
-        "waivers": [
-          {
-            "id": "temporary-known-drift",
-            "severity": "warning",
-            "pattern": "known non-critical warning",
-            "targets": ["^my_target$"],
-            "created_utc": "2026-06-01T00:00:00Z",
-            "expires_utc": "2026-12-31T00:00:00Z",
-            "owner": "team-abi",
-            "approved_by": "architecture-board",
-            "ticket": "ABI-1234",
-            "reason": "Temporary upstream transition"
-          }
-        ]
-      },
-      "bindings": {
-        "symbol_contract": {
-          "path": "abi/bindings/my_target.symbol_contract.json",
-          "mode": "strict"
-        },
-        "metadata_path": "abi/bindings/my_target.bindings.json",
-        "metadata": {
-          "managed": {
-            "runtime": "dotnet"
-          }
-        },
-        "symbol_docs": {
-          "my_init": "Initializes runtime state."
-        },
-        "deprecated_symbols": ["my_shutdown"],
-        "generators": [
-          {
-            "name": "stub",
-            "kind": "external",
-            "enabled": true,
-            "manifest": "tools/my_codegen/plugin.manifest.json",
-            "plugin": "my_codegen.stub"
-          }
-        ]
-      },
-      "binary": {
-        "path": "native/build/libmyapi.so",
-        "allow_non_prefixed_exports": false
+        "path": "include/mylib.h",
+        "symbol_prefix": "mylib_",
+        "api_macro": "MYLIB_API"
       },
       "codegen": {
-        "enabled": true,
-        "idl_schema_version": 1,
-        "idl_output_path": "abi/generated/my_target/my_target.idl.json",
-        "native_header_output_path": "native/include/my_api.h",
-        "native_export_map_output_path": "native/my_api.map",
-        "native_header_guard": "MY_API_H",
-        "native_api_macro": "MY_API",
-        "native_call_macro": "MY_CALL",
-        "native_constants": {
-          "MY_CONST_LIMIT": "16"
-        },
-        "include_symbols_regex": ["^my_"],
-        "exclude_symbols": []
+        "idl_output": "abi/generated/mylib/mylib.idl.json"
+      },
+      "baseline_path": "abi/baselines/mylib.json",
+      "bindings": {
+        "generators": [
+          {
+            "manifest": "{repo_root}/tools/abi_framework/generator_sdk/plugin.manifest.json",
+            "plugins": [
+              "abi_framework.python_bindings",
+              "abi_framework.rust_ffi",
+              "abi_framework.typescript_bindings",
+              "abi_framework.go_bindings"
+            ]
+          }
+        ]
       }
     }
   }
 }
 ```
 
-Notes:
+## ABI error types (SARIF rules)
 
-- `bindings.symbol_contract` is optional but recommended.
-- `bindings.symbol_contract.mode`:
-  - `strict`: fail on missing + extra generated symbols.
-  - `required_only`: fail only on missing required symbols.
-- `bindings.metadata_path` and `bindings.metadata` are target-agnostic metadata inputs merged into `idl.bindings`.
-- Prefer `bindings.generators[].manifest` + `bindings.generators[].plugin` for deterministic plugin binding.
-- `bindings.generators[].command` can be used directly or as an explicit mirror of manifest entrypoint.
-- `codegen` command runs IDL generation plus configured language generators.
-- If `codegen.native_header_output_path`/`codegen.native_export_map_output_path` are set,
-  `generate`/`codegen`/`sync` also refresh native ABI artifacts from IDL.
-- `generate` command generates IDL only.
-- `header.parser.compiler_candidates` lets parser auto-pick the first available clang binary.
-- Environment override `ABI_CLANG` can force a specific clang executable path.
+| Rule | Meaning |
+|------|---------|
+| `ABI001` | Function removed from public API |
+| `ABI002` | Function signature changed |
+| `ABI003` | Enum value added, removed, or renumbered |
+| `ABI004` | Struct layout changed |
+| `ABI005` | Bindings metadata mismatch |
+| `ABI006` | Version policy violation |
+| `ABI007` | Warning (non-breaking) |
 
-## Wrapper scripts
+## License
 
-- Bash: `scripts/abi.sh`
-- PowerShell: `scripts/abi.ps1`
-
-Both wrappers expose:
-
-- `snapshot`
-- `baseline`
-- `baseline-all`
-- `regen` / `regen-baselines`
-- `doctor`
-- `waiver-audit`
-- `benchmark`
-- `benchmark-gate`
-- `validate-plugin-manifest`
-- `guardrails`
-- `generate`
-- `codegen`
-- `sync`
-- `release-prepare`
-- `changelog`
-- `verify` / `check`
-- `verify-all` / `check-all`
-- `list-targets`
-- `init-target`
-- `diff`
-
-Generator templates:
-
-- `tools/abi_framework/generator_sdk/README.md`
-- `tools/abi_framework/generator_sdk/external_generator_stub.py`
+MIT

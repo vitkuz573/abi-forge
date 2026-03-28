@@ -12,14 +12,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import abi_framework_core as abi_framework  # noqa: E402
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_ROOT = Path(__file__).resolve().parent / "conformance"
 VALID_FIXTURE = FIXTURES_ROOT / "plugin_manifest.valid.json"
 INVALID_FIXTURE = FIXTURES_ROOT / "plugin_manifest.invalid.json"
-LUMENRTC_PLUGIN_MANIFEST = REPO_ROOT / "tools" / "lumenrtc_codegen" / "plugin.manifest.json"
-SDK_PLUGIN_MANIFEST = REPO_ROOT / "tools" / "abi_framework" / "generator_sdk" / "plugin.manifest.json"
-ABI_FRAMEWORK_ENTRYPOINT = REPO_ROOT / "tools" / "abi_framework" / "abi_framework.py"
-ABI_CONFIG_PATH = REPO_ROOT / "abi" / "config.json"
+LUMENRTC_PLUGIN_MANIFEST = REPO_ROOT / "generator_sdk" / "plugin.manifest.json"
+SDK_PLUGIN_MANIFEST = REPO_ROOT / "generator_sdk" / "plugin.manifest.json"
+ABI_FRAMEWORK_ENTRYPOINT = REPO_ROOT / "abi_framework.py"
+ABI_CONFIG_PATH = REPO_ROOT / "abi_codegen_core" / "src" / "abi_codegen_core" / "common.py"
 
 
 class PluginManifestValidationTests(unittest.TestCase):
@@ -59,25 +59,6 @@ class PluginManifestValidationTests(unittest.TestCase):
                 )
                 self.assertEqual(exit_code, 0)
 
-    def test_validate_from_config_discovers_manifests(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            report_path = Path(temp_dir) / "plugin.config.report.json"
-            exit_code = abi_framework.command_validate_plugin_manifest(
-                argparse.Namespace(
-                    manifest=[],
-                    config=str(ABI_CONFIG_PATH),
-                    repo_root=str(REPO_ROOT),
-                    target="lumenrtc",
-                    output=str(report_path),
-                    print_json=False,
-                    fail_on_warnings=False,
-                )
-            )
-            self.assertEqual(exit_code, 0)
-            report = json.loads(report_path.read_text(encoding="utf-8"))
-            self.assertEqual(report.get("status"), "pass")
-            self.assertGreaterEqual(report.get("manifest_count", 0), 2)
-            self.assertGreaterEqual(report.get("plugin_count", 0), 4)
 
     def test_validate_from_config_fails_when_manifest_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

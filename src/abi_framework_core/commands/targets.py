@@ -141,7 +141,7 @@ def command_scaffold_managed_api(args: argparse.Namespace) -> int:
     if str(generator_sdk) not in sys.path:
         sys.path.insert(0, str(generator_sdk))
 
-    CORE_SRC = Path(__file__).resolve().parents[4] / "abi_codegen_core" / "src"
+    CORE_SRC = Path(__file__).resolve().parents[3] / "abi_codegen_core" / "src"
     if str(CORE_SRC) not in sys.path:
         sys.path.insert(0, str(CORE_SRC))
 
@@ -204,7 +204,7 @@ def command_scaffold_managed_bindings(args: argparse.Namespace) -> int:
     if str(generator_sdk) not in sys.path:
         sys.path.insert(0, str(generator_sdk))
 
-    CORE_SRC = Path(__file__).resolve().parents[4] / "abi_codegen_core" / "src"
+    CORE_SRC = Path(__file__).resolve().parents[3] / "abi_codegen_core" / "src"
     if str(CORE_SRC) not in sys.path:
         sys.path.insert(0, str(CORE_SRC))
 
@@ -274,7 +274,7 @@ def command_generate_python_bindings(args: argparse.Namespace) -> int:
     import json
     from abi_codegen_core.common import write_if_changed  # type: ignore[import]
 
-    CORE_SRC = Path(__file__).resolve().parents[4] / "abi_codegen_core" / "src"
+    CORE_SRC = Path(__file__).resolve().parents[3] / "abi_codegen_core" / "src"
     if str(CORE_SRC) not in sys.path:
         sys.path.insert(0, str(CORE_SRC))
 
@@ -301,7 +301,7 @@ def command_generate_rust_ffi(args: argparse.Namespace) -> int:
     import json
     from abi_codegen_core.common import write_if_changed  # type: ignore[import]
 
-    CORE_SRC = Path(__file__).resolve().parents[4] / "abi_codegen_core" / "src"
+    CORE_SRC = Path(__file__).resolve().parents[3] / "abi_codegen_core" / "src"
     if str(CORE_SRC) not in sys.path:
         sys.path.insert(0, str(CORE_SRC))
 
