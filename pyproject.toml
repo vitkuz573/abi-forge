@@ -45,5 +45,5 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-"abi_forge_sdk" = ["plugin.manifest.json"]
+"abi_forge_sdk" = ["plugin.manifest.json", "csharp/**"]
 "abi_framework_core" = ["py.typed"]
