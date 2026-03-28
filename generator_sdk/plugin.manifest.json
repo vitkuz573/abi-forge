@@ -173,6 +173,39 @@
         "max_idl_schema_version": 1
       },
       "owners": ["@vitkuz573"]
+    },
+    {
+      "name": "abi_framework.managed_bindings_scaffold",
+      "version": "1.0.0",
+      "description": "Scaffold managed.json (SafeHandle definitions) from IDL opaque_types. Run once per target.",
+      "entrypoint": {
+        "kind": "external",
+        "command": [
+          "python3",
+          "{repo_root}/tools/abi_framework/generator_sdk/managed_bindings_scaffold_generator.py",
+          "--idl", "{idl}",
+          "--namespace", "TODO_NAMESPACE",
+          "--out", "{repo_root}/abi/bindings/{target}.managed.json",
+          "{check}",
+          "{dry_run}"
+        ]
+      },
+      "capabilities": {
+        "supports_check": true,
+        "supports_dry_run": true,
+        "deterministic_output": true,
+        "requires_repo_root": true,
+        "writes_managed_sources": false
+      },
+      "contracts": {
+        "inputs": [{"name": "idl", "path_arg": "--idl", "required": true}],
+        "outputs": [{"name": "managed_bindings", "path_arg": "--out", "required": true}]
+      },
+      "compatibility": {
+        "min_idl_schema_version": 1,
+        "max_idl_schema_version": 1
+      },
+      "owners": ["@vitkuz573"]
     }
   ]
 }

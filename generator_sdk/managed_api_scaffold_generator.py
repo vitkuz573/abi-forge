@@ -2,13 +2,14 @@
 """
 Managed API scaffold generator.
 
-Given an IDL JSON, generates a starter managed_api.source.json that:
-  - Enables auto_abi_surface (zero-config P/Invoke layer for ALL functions)
-  - Stubs out callback classes for each callback struct in the IDL
-  - Stubs out handle_api classes for each opaque handle type
-  - Groups functions under their owning handle class as reference comments
+Given an IDL JSON, generates a starter ``managed_api.source.json`` that:
+  - Enables ``auto_abi_surface`` (zero-config P/Invoke for ALL functions)
+  - Stubs out ``callbacks`` classes for each callback struct found in the IDL
+  - Stubs out ``handle_api`` classes for each opaque handle type
+  - Uses smart type inference to fill in managed parameter types
 
-Run once when adding a new library. Then fill in the TODO markers.
+Run once (--force) to bootstrap, then use --update to merge IDL changes
+into an existing file without losing existing customizations.
 """
 from __future__ import annotations
 
@@ -26,6 +27,10 @@ if str(CORE_SRC) not in sys.path:
 
 from abi_codegen_core.common import load_json_object, write_if_changed
 
+
+# ---------------------------------------------------------------------------
+# Name utilities
+# ---------------------------------------------------------------------------
 
 def snake_to_pascal(name: str) -> str:
     return "".join(w.capitalize() for w in re.split(r"[_\s]+", name) if w)
@@ -53,7 +58,19 @@ def infer_native_struct_name(c_type_name: str) -> str:
     return snake_to_pascal(name)
 
 
-def infer_symbol_prefix(idl: dict[str, Any]) -> str:
+# ---------------------------------------------------------------------------
+# IDL extraction helpers
+# ---------------------------------------------------------------------------
+
+def get_symbol_prefix(idl: dict[str, Any], override: str | None) -> str:
+    if override is not None:
+        return override
+    # Try IDL codegen section (added by framework >= this version)
+    codegen = idl.get("codegen") or {}
+    sp = codegen.get("symbol_prefix")
+    if isinstance(sp, str) and sp:
+        return sp
+    # Infer from target name + first function
     target = str(idl.get("target") or "")
     functions = idl.get("functions") or []
     guessed = target.rstrip("_") + "_"
@@ -64,43 +81,316 @@ def infer_symbol_prefix(idl: dict[str, Any]) -> str:
     return ""
 
 
+def get_header_structs(idl: dict[str, Any]) -> dict[str, Any]:
+    """Return the struct definitions dict from header_types (not idl.structs)."""
+    return idl.get("header_types", {}).get("structs", {}) or {}
+
+
+def get_callback_typedefs(idl: dict[str, Any]) -> dict[str, str]:
+    """Return {typedef_name: declaration_string} from header_types.callback_typedefs."""
+    raw = idl.get("header_types", {}).get("callback_typedefs") or []
+    result: dict[str, str] = {}
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "")
+                decl = str(item.get("declaration") or "")
+                if name:
+                    result[name] = decl
+    elif isinstance(raw, dict):
+        for name, decl in raw.items():
+            result[str(name)] = str(decl)
+    return result
+
+
+def get_opaque_types(idl: dict[str, Any]) -> dict[str, Any]:
+    return idl.get("bindings", {}).get("interop", {}).get("opaque_types", {}) or {}
+
+
+def get_callback_suffixes(idl: dict[str, Any]) -> list[str]:
+    raw = idl.get("bindings", {}).get("interop", {}).get("callback_struct_suffixes") or []
+    return list(raw) if isinstance(raw, list) else ["_callbacks_t"]
+
+
+def get_idl_enums(idl: dict[str, Any]) -> set[str]:
+    enums = idl.get("header_types", {}).get("enums") or {}
+    if isinstance(enums, dict):
+        return set(enums.keys())
+    return set()
+
+
+# ---------------------------------------------------------------------------
+# Typedef declaration parser
+# ---------------------------------------------------------------------------
+
+def _split_c_params(params_str: str) -> list[str]:
+    """Split a C parameter list by comma, respecting parens."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for ch in params_str:
+        if ch == "," and depth == 0:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+        else:
+            current.append(ch)
+            if ch in "([":
+                depth += 1
+            elif ch in ")]":
+                depth = max(0, depth - 1)
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def parse_typedef_params(declaration: str) -> list[tuple[str, str]]:
+    """
+    Parse (c_type, param_name) pairs from a typedef function pointer declaration.
+    Skips the leading user_data/ud/ctx/void* parameter.
+    """
+    # Extract everything inside the last pair of parens (the parameter list)
+    m = re.search(r"\)\s*\(([^)]*(?:\([^)]*\)[^)]*)*)\)\s*;?\s*$", declaration)
+    if not m:
+        return []
+    params_str = m.group(1).strip()
+    if not params_str or params_str == "void":
+        return []
+
+    raw_params = _split_c_params(params_str)
+    result: list[tuple[str, str]] = []
+    first = True
+    for param in raw_params:
+        param = param.strip()
+        if not param or param == "...":
+            continue
+        # Split into type + name: last non-* token is the name
+        # Handle function pointer params specially (rare in callbacks)
+        tokens = param.rsplit(None, 1)
+        if len(tokens) == 2:
+            c_type = tokens[0].strip().lstrip("*").strip()
+            name = tokens[1].strip().lstrip("*").strip()
+        else:
+            c_type = param
+            name = "arg"
+        # Skip user_data-like first params
+        if first and name.lower() in ("user_data", "ud", "ctx", "context", "userdata", "self"):
+            first = False
+            continue
+        # Also skip explicit void* params
+        if c_type.replace("const", "").strip().rstrip("*").strip() == "void" and name.lower() in (
+            "user_data", "ud", "ctx", "context", "userdata",
+        ):
+            first = False
+            continue
+        first = False
+        result.append((c_type, name))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Type inference
+# ---------------------------------------------------------------------------
+
+# C primitive → C# type
+_PRIMITIVE_MAP = {
+    "bool": "bool", "_Bool": "bool",
+    "int": "int", "int32_t": "int",
+    "unsigned int": "uint", "uint32_t": "uint",
+    "long": "nint", "long long": "long", "int64_t": "long",
+    "unsigned long": "nuint", "unsigned long long": "ulong", "uint64_t": "ulong",
+    "short": "short", "int16_t": "short",
+    "unsigned short": "ushort", "uint16_t": "ushort",
+    "float": "float", "double": "double",
+    "size_t": "nuint", "ssize_t": "nint",
+    "intptr_t": "nint", "uintptr_t": "nuint",
+    "char": "sbyte",
+    "signed char": "sbyte", "int8_t": "sbyte",
+    "unsigned char": "byte", "uint8_t": "byte",
+}
+
+
+def _bare_type(c_type: str) -> tuple[str, bool]:
+    """Return (bare_type_without_const_and_pointer, is_pointer)."""
+    t = c_type.strip()
+    t = re.sub(r"\bconst\b", "", t).strip()
+    is_ptr = t.endswith("*")
+    t = t.rstrip("*").strip()
+    return t, is_ptr
+
+
+def infer_param(
+    c_type: str,
+    param_name: str,
+    idl_enums: set[str],
+    opaque_types: dict[str, Any],
+    symbol_prefix: str,
+) -> tuple[str, str]:
+    """Return (managed_type_str, marshal_expression)."""
+    bare, is_ptr = _bare_type(c_type)
+
+    # const char* / char* → string
+    if bare in ("char", "signed char") and is_ptr:
+        return "string?", f"Utf8String.Read({param_name})"
+
+    # Enum (non-pointer)
+    if not is_ptr and bare in idl_enums:
+        managed_enum = infer_class_name(bare, symbol_prefix)
+        return managed_enum, f"({managed_enum}){param_name}"
+
+    # Opaque handle pointer
+    if is_ptr and bare in opaque_types:
+        class_name = infer_class_name(bare, symbol_prefix)
+        return f"{class_name}?", f"new {class_name}({param_name})"
+
+    # bool via int binary flag pattern
+    if bare == "int" and param_name.lower() in ("binary", "is_binary", "is_text"):
+        return "bool", f"{param_name} != 0"
+
+    # uint8_t* data buffer — generate TODO block
+    if bare in ("uint8_t", "unsigned char") and is_ptr:
+        return "ReadOnlyMemory<byte>", f"/* TODO: copy {param_name} buffer */"
+
+    # Primitives
+    if bare in _PRIMITIVE_MAP:
+        return _PRIMITIVE_MAP[bare], param_name
+
+    # Unknown
+    return f"/* {c_type} */", f"{param_name}"
+
+
+def _build_lambda_params(typed_params: list[tuple[str, str, str]]) -> str:
+    """Build lambda parameter list: (ud, p1, p2, ...)"""
+    names = ["ud"] + [name for _, name, _ in typed_params]
+    return "(" + ", ".join(names) + ")"
+
+
+def _build_invoke(managed_name: str, typed_params: list[tuple[str, str, str]]) -> str:
+    """Build the Invoke(...) call from marshal expressions."""
+    args = ", ".join(expr for _, _, expr in typed_params)
+    return f"{managed_name}?.Invoke({args})"
+
+
+def _has_complex_param(typed_params: list[tuple[str, str, str]]) -> bool:
+    return any("TODO" in expr for _, _, expr in typed_params)
+
+
+def build_assignment_lines(
+    managed_name: str,
+    typedef_decl: str,
+    idl_enums: set[str],
+    opaque_types: dict[str, Any],
+    symbol_prefix: str,
+) -> list[str]:
+    """Generate assignment_lines for a callback field."""
+    raw_params = parse_typedef_params(typedef_decl)
+    if not raw_params:
+        # No params beyond user_data: simple nullary invoke
+        return [f"(ud) => {managed_name}?.Invoke()"]
+
+    typed: list[tuple[str, str, str]] = []  # (managed_type, c_name, marshal_expr)
+    for c_type, name in raw_params:
+        m_type, expr = infer_param(c_type, name, idl_enums, opaque_types, symbol_prefix)
+        typed.append((m_type, name, expr))
+
+    lam_params = _build_lambda_params(typed)
+    if _has_complex_param(typed):
+        # Multi-line with comment hints
+        lines = [f"{lam_params} =>", "{"]
+        for m_type, name, expr in typed:
+            if "TODO" in expr:
+                lines.append(f"    // TODO: marshal {name} ({m_type})")
+        invoke_args = ", ".join(
+            expr if "TODO" not in expr else f"/* {name} */" for _, name, expr in typed
+        )
+        lines.append(f"    {managed_name}?.Invoke({invoke_args});")
+        lines.append("}")
+        return lines
+    else:
+        invoke = _build_invoke(managed_name, typed)
+        return [f"{lam_params} => {invoke}"]
+
+
+def build_managed_type_signature(typed_params: list[tuple[str, str, str]]) -> str:
+    """Build Action<...> type from typed params."""
+    if not typed_params:
+        return "Action?"
+    type_args = ", ".join(m_type for m_type, _, _ in typed_params)
+    return f"Action<{type_args}>?"
+
+
+# ---------------------------------------------------------------------------
+# Callback and handle builders
+# ---------------------------------------------------------------------------
+
 def is_callback_struct(name: str, callback_suffixes: list[str], symbol_prefix: str) -> bool:
     if any(name.endswith(suf) for suf in callback_suffixes):
         return True
     bare = strip_prefix(name, symbol_prefix).lower()
-    return "callback" in bare or bare.rstrip("_t").endswith("_cb")
+    return "callback" in bare or (bare.rstrip("t_").rstrip("s_").endswith("_cb"))
 
 
-def is_function_pointer_field(field: dict[str, Any]) -> bool:
-    c_type = str(field.get("c_type") or "")
-    return "(*)" in c_type or bool(re.search(r"\(\s*\*", c_type))
-
-
-def build_callback_entry(struct: dict[str, Any], symbol_prefix: str) -> dict[str, Any]:
-    struct_name = str(struct.get("name") or "")
+def build_callback_entry(
+    struct_name: str,
+    struct_def: dict[str, Any],
+    symbol_prefix: str,
+    callback_typedefs: dict[str, str],
+    idl_enums: set[str],
+    opaque_types: dict[str, Any],
+) -> dict[str, Any]:
     class_name = infer_class_name(struct_name, symbol_prefix)
     native_struct = infer_native_struct_name(struct_name)
 
-    fields_raw = struct.get("fields") or []
+    fields_raw = struct_def.get("fields") or []
     fields_out: list[dict[str, Any]] = []
+
     for field in fields_raw:
+        if not isinstance(field, dict):
+            continue
         field_name = str(field.get("name") or "")
-        if not field_name:
+        if not field_name or field_name.lower() in ("user_data", "ud", "context", "ctx"):
             continue
-        if field_name in ("user_data", "ud", "context", "ctx", "userdata"):
-            continue
-        if not is_function_pointer_field(field):
-            continue
+
+        # Try to find the typedef for this field's type from declaration
+        decl = str(field.get("declaration") or "")
+        # declaration looks like: "lrtc_data_channel_state_cb on_state_change"
+        # Extract the typedef name (first token before field_name)
+        typedef_name = ""
+        if decl:
+            parts = decl.split()
+            if len(parts) >= 2 and parts[-1] == field_name:
+                typedef_name = parts[0]
+
+        typedef_decl = callback_typedefs.get(typedef_name, "")
         managed_name = snake_to_pascal(field_name)
+
+        # Build typed params for managed_type inference
+        raw_params = parse_typedef_params(typedef_decl) if typedef_decl else []
+        typed: list[tuple[str, str, str]] = []
+        for c_type, pname in raw_params:
+            m_type, expr = infer_param(c_type, pname, idl_enums, opaque_types, symbol_prefix)
+            typed.append((m_type, pname, expr))
+
+        managed_type = build_managed_type_signature(typed) if typedef_decl else "Action</* TODO */>?"
+
+        assignment_lines = (
+            build_assignment_lines(managed_name, typedef_decl, idl_enums, opaque_types, symbol_prefix)
+            if typedef_decl else
+            [f"(ud /*, TODO: params */) => {managed_name}?.Invoke(/* TODO: marshal params */)"]
+        )
+
+        delegate_field = f"_{managed_name[0].lower()}{managed_name[1:]}Cb" if managed_name else f"_{field_name}Cb"
+        delegate_type = snake_to_pascal(typedef_name) if typedef_name else f"{managed_name}Cb"
+
         fields_out.append({
             "managed_name": managed_name,
-            "managed_type": "Action</* TODO: add managed param types */>?",
-            "delegate_field": f"_{managed_name[0].lower()}{managed_name[1:]}Cb",
-            "delegate_type": f"{managed_name}Cb",
+            "managed_type": managed_type,
+            "delegate_field": delegate_field,
+            "delegate_type": delegate_type,
             "native_field": field_name,
-            "assignment_lines": [
-                f"(ud /*, TODO: params */) => {managed_name}?.Invoke(/* TODO: marshal params */)"
-            ],
+            "assignment_lines": assignment_lines,
         })
 
     return {
@@ -124,7 +414,8 @@ def group_functions_by_handle(
         params = func.get("parameters") or []
         matched: str | None = None
         for param in params:
-            bare = re.sub(r"[\s*]|const", "", str(param.get("c_type") or "")).strip()
+            c_type = str(param.get("c_type") or "")
+            bare = re.sub(r"[\s*]|const", "", c_type).strip()
             if bare in opaque_types:
                 matched = bare
                 break
@@ -132,22 +423,35 @@ def group_functions_by_handle(
     return groups
 
 
-def scaffold(idl: dict[str, Any], namespace: str, symbol_prefix: str | None) -> dict[str, Any]:
-    target = str(idl.get("target") or "unknown")
-    bindings = idl.get("bindings") or {}
-    interop = bindings.get("interop") or {}
-    opaque_types: dict[str, Any] = interop.get("opaque_types") or {}
-    callback_suffixes: list[str] = interop.get("callback_struct_suffixes") or ["_callbacks_t"]
+# ---------------------------------------------------------------------------
+# Main scaffold / update logic
+# ---------------------------------------------------------------------------
 
-    sp = symbol_prefix if symbol_prefix is not None else infer_symbol_prefix(idl)
-    structs: list[dict[str, Any]] = idl.get("structs") or []
+def scaffold(
+    idl: dict[str, Any],
+    namespace: str,
+    symbol_prefix_override: str | None,
+) -> dict[str, Any]:
+    sp = get_symbol_prefix(idl, symbol_prefix_override)
+    opaque_types = get_opaque_types(idl)
+    callback_suffixes = get_callback_suffixes(idl)
+    header_structs = get_header_structs(idl)
+    callback_typedefs = get_callback_typedefs(idl)
+    idl_enums = get_idl_enums(idl)
     functions: list[dict[str, Any]] = idl.get("functions") or []
 
-    cb_structs = [s for s in structs if is_callback_struct(str(s.get("name") or ""), callback_suffixes, sp)]
+    # Callback structs
+    cb_struct_names = [
+        name for name, defn in header_structs.items()
+        if is_callback_struct(name, callback_suffixes, sp)
+    ]
+    callbacks = [
+        build_callback_entry(name, header_structs[name], sp, callback_typedefs, idl_enums, opaque_types)
+        for name in cb_struct_names
+    ]
+
+    # Handle API
     func_groups = group_functions_by_handle(functions, opaque_types)
-
-    callbacks = [build_callback_entry(s, sp) for s in cb_structs]
-
     handle_api: list[dict[str, Any]] = []
     for handle_type in sorted(opaque_types):
         class_name = infer_class_name(handle_type, sp)
@@ -156,7 +460,7 @@ def scaffold(idl: dict[str, Any], namespace: str, symbol_prefix: str | None) -> 
             {"line": f"// TODO: add managed members for {class_name}"},
         ]
         if funcs:
-            members.append({"line": f"// Native functions for this handle:"})
+            members.append({"line": "// Native functions for this handle:"})
             members.extend({"line": f"//   {f}"} for f in funcs)
         handle_api.append({"class": class_name, "members": members})
 
@@ -198,30 +502,69 @@ def scaffold(idl: dict[str, Any], namespace: str, symbol_prefix: str | None) -> 
         },
         "callbacks": callbacks,
         "handle_api": handle_api,
-        # Computed by managed_api_metadata_generator — leave empty here
         "required_native_functions": [],
     }
+
+
+def _update_existing(
+    existing: dict[str, Any],
+    generated: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """Merge newly-discovered handles and callbacks into existing source without losing customizations."""
+    result = json.loads(json.dumps(existing))  # deep copy
+    stats = {"added_callbacks": 0, "added_handles": 0, "kept_callbacks": 0, "kept_handles": 0}
+
+    # Callbacks: merge by class name
+    existing_cb_names = {cb["class"] for cb in (result.get("callbacks") or []) if isinstance(cb, dict)}
+    new_callbacks = [cb for cb in (generated.get("callbacks") or []) if cb.get("class") not in existing_cb_names]
+    if "callbacks" not in result or not isinstance(result.get("callbacks"), list):
+        result["callbacks"] = []
+    result["callbacks"].extend(new_callbacks)
+    stats["added_callbacks"] = len(new_callbacks)
+    stats["kept_callbacks"] = len(existing_cb_names)
+
+    # Handle API: merge by class name
+    existing_h_names = {h["class"] for h in (result.get("handle_api") or []) if isinstance(h, dict)}
+    new_handles = [h for h in (generated.get("handle_api") or []) if h.get("class") not in existing_h_names]
+    if "handle_api" not in result or not isinstance(result.get("handle_api"), list):
+        result["handle_api"] = []
+    result["handle_api"].extend(new_handles)
+    stats["added_handles"] = len(new_handles)
+    stats["kept_handles"] = len(existing_h_names)
+
+    return result, stats
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scaffold managed_api.source.json from IDL JSON.")
     parser.add_argument("--idl", required=True)
-    parser.add_argument("--namespace", required=True, help="Managed C# namespace (e.g. MyLib).")
+    parser.add_argument("--namespace", required=True, help="C# namespace (e.g. MyLib).")
     parser.add_argument("--out", required=True)
-    parser.add_argument("--symbol-prefix", default=None, help="Symbol prefix override (auto-inferred if omitted).")
-    parser.add_argument("--force", action="store_true", help="Overwrite existing output file.")
+    parser.add_argument("--symbol-prefix", default=None)
+    parser.add_argument("--force", action="store_true", help="Overwrite existing output.")
+    parser.add_argument("--update", action="store_true", help="Merge new handles/callbacks into existing file.")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    out_path = Path(args.out)
-    if out_path.exists() and not args.force and not args.check and not args.dry_run:
-        print(f"Scaffold: output already exists at '{out_path}'. Use --force to overwrite.")
-        return 0
-
     idl = load_json_object(Path(args.idl))
-    result = scaffold(idl, args.namespace, args.symbol_prefix)
-    content = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    out_path = Path(args.out)
+    generated = scaffold(idl, args.namespace, args.symbol_prefix)
+
+    if args.update and out_path.exists():
+        existing = load_json_object(out_path)
+        merged, stats = _update_existing(existing, generated)
+        content = json.dumps(merged, ensure_ascii=False, indent=2) + "\n"
+        if not args.check and not args.dry_run:
+            print(f"scaffold --update: added {stats['added_callbacks']} callbacks, "
+                  f"{stats['added_handles']} handles; "
+                  f"kept {stats['kept_callbacks']} callbacks, {stats['kept_handles']} handles")
+    elif out_path.exists() and not args.force and not args.check and not args.dry_run:
+        print(f"scaffold: '{out_path}' exists. Use --force to overwrite or --update to merge.")
+        return 0
+    else:
+        content = json.dumps(generated, ensure_ascii=False, indent=2) + "\n"
+
     return write_if_changed(out_path, content, args.check, args.dry_run)
 
 

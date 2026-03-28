@@ -157,6 +157,9 @@ def resolve_codegen_config(target: dict[str, Any], target_name: str, repo_root: 
         native_api_macro = header_cfg.get("api_macro")
     if native_call_macro is None and isinstance(header_cfg, dict):
         native_call_macro = header_cfg.get("call_macro")
+    symbol_prefix = None
+    if isinstance(header_cfg, dict):
+        symbol_prefix = header_cfg.get("symbol_prefix")
     if native_api_macro is not None and (not isinstance(native_api_macro, str) or not native_api_macro):
         raise AbiFrameworkError(f"target '{target_name}'.codegen.native_api_macro must be string when specified")
     if native_call_macro is not None and (not isinstance(native_call_macro, str) or not native_call_macro):
@@ -230,6 +233,7 @@ def resolve_codegen_config(target: dict[str, Any], target_name: str, repo_root: 
         "native_header_guard": native_header_guard,
         "native_api_macro": native_api_macro,
         "native_call_macro": native_call_macro,
+        "symbol_prefix": symbol_prefix,
         "native_constants": native_constants,
         "version_macro_names": version_macro_names,
         "include_symbols": include_symbols,
@@ -511,6 +515,9 @@ def build_idl_payload(
             "enabled": bool(codegen_cfg.get("enabled", True)),
             "include_symbols": sorted(codegen_cfg.get("include_symbols", [])),
             "exclude_symbols": sorted(codegen_cfg.get("exclude_symbols", [])),
+            "native_api_macro": codegen_cfg.get("native_api_macro") or None,
+            "native_call_macro": codegen_cfg.get("native_call_macro") or None,
+            "symbol_prefix": codegen_cfg.get("symbol_prefix") or None,
         },
     }
     if bindings_metadata:

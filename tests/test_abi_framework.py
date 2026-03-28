@@ -1302,15 +1302,6 @@ class ScaffoldManagedApiTests(unittest.TestCase):
     def test_scaffold_detects_callback_struct(self) -> None:
         idl = _make_minimal_idl(
             target="foo",
-            structs=[
-                {
-                    "name": "foo_event_callbacks_t",
-                    "fields": [
-                        {"name": "on_event", "c_type": "void (*)(void* ud)"},
-                        {"name": "user_data", "c_type": "void*"},
-                    ],
-                }
-            ],
             bindings={
                 "interop": {
                     "callback_struct_suffixes": ["_callbacks_t"],
@@ -1318,6 +1309,24 @@ class ScaffoldManagedApiTests(unittest.TestCase):
                 }
             },
         )
+        # New format: header_types.structs is a dict
+        idl["header_types"] = {
+            "structs": {
+                "foo_event_callbacks_t": {
+                    "fields": [
+                        {"name": "on_event", "declaration": "foo_event_cb on_event"},
+                        {"name": "user_data", "c_type": "void*"},
+                    ],
+                }
+            },
+            "callback_typedefs": [
+                {"name": "foo_event_cb", "declaration": "typedef void (FOO_CALL *foo_event_cb)(void* ud);"}
+            ],
+            "enums": {},
+            "opaque_types": [],
+            "opaque_type_declarations": [],
+            "constants": {},
+        }
         result = scaffold_mod.scaffold(idl, "Foo", "foo_")
         self.assertEqual(len(result["callbacks"]), 1)
         cb = result["callbacks"][0]
@@ -1692,6 +1701,226 @@ class NativeExportsGeneratorTests(unittest.TestCase):
         self.assertTrue(impl_header.exists())
         cpp_content = out_cpp.read_text(encoding="utf-8")
         self.assertIn("mylib_init", cpp_content)
+
+
+class ScaffoldV2Tests(unittest.TestCase):
+    """Tests for the improved managed_api_scaffold_generator (v2)."""
+
+    def setUp(self) -> None:
+        sdk_path = Path(__file__).resolve().parents[1] / "generator_sdk"
+        if str(sdk_path) not in sys.path:
+            sys.path.insert(0, str(sdk_path))
+        import managed_api_scaffold_generator as scaffold_mod
+        import managed_bindings_scaffold_generator as bindings_mod
+        self.scaffold_mod = scaffold_mod
+        self.bindings_mod = bindings_mod
+
+    def _make_minimal_idl(
+        self,
+        target: str = "foo",
+        symbol_prefix: str = "foo_",
+        opaque_types: dict | None = None,
+        structs: dict | None = None,
+        cb_typedefs: list | None = None,
+        enums: dict | None = None,
+        functions: list | None = None,
+    ) -> dict:
+        return {
+            "target": target,
+            "codegen": {"symbol_prefix": symbol_prefix},
+            "functions": functions or [],
+            "header_types": {
+                "structs": structs or {},
+                "callback_typedefs": cb_typedefs or [],
+                "enums": enums or {},
+                "opaque_types": [],
+                "opaque_type_declarations": [],
+                "constants": {},
+            },
+            "bindings": {
+                "interop": {
+                    "opaque_types": opaque_types or {},
+                    "callback_struct_suffixes": ["_callbacks_t"],
+                }
+            },
+        }
+
+    def test_scaffold_reads_from_header_types_structs(self) -> None:
+        """Callback struct in header_types.structs is detected (not idl.structs)."""
+        idl = self._make_minimal_idl(
+            structs={
+                "foo_event_callbacks_t": {
+                    "fields": [
+                        {"name": "on_ready", "declaration": "foo_ready_cb on_ready"},
+                    ]
+                }
+            },
+            cb_typedefs=[
+                {"name": "foo_ready_cb", "declaration": "typedef void (FOO_CALL *foo_ready_cb)(void* user_data);"}
+            ],
+        )
+        result = self.scaffold_mod.scaffold(idl, "FooLib", None)
+        cbs = result["callbacks"]
+        self.assertEqual(len(cbs), 1)
+        self.assertEqual(cbs[0]["class"], "EventCallbacks")
+
+    def test_scaffold_uses_symbol_prefix_from_idl(self) -> None:
+        """symbol_prefix in idl.codegen gives correct class names without prefix."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="bar_",
+            opaque_types={
+                "bar_session_t": {"release": "bar_session_release"},
+            },
+        )
+        result = self.scaffold_mod.scaffold(idl, "BarLib", None)
+        handles = result["handle_api"]
+        self.assertEqual(len(handles), 1)
+        # Should be "Session", not "BarSession"
+        self.assertEqual(handles[0]["class"], "Session")
+
+    def test_scaffold_infers_enum_callback_type(self) -> None:
+        """Callback field with enum param gets Action<MyEnum>? type."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            enums={"foo_state_t": {"members": [{"name": "FOO_STATE_A", "value_expr": "0"}]}},
+            structs={
+                "foo_stuff_callbacks_t": {
+                    "fields": [
+                        {"name": "on_state", "declaration": "foo_state_cb on_state"},
+                    ]
+                }
+            },
+            cb_typedefs=[
+                {
+                    "name": "foo_state_cb",
+                    "declaration": "typedef void (FOO_CALL *foo_state_cb)(void* user_data, foo_state_t state);",
+                }
+            ],
+        )
+        result = self.scaffold_mod.scaffold(idl, "FooLib", None)
+        cbs = result["callbacks"]
+        self.assertEqual(len(cbs), 1)
+        fields = cbs[0]["fields"]
+        self.assertEqual(len(fields), 1)
+        self.assertEqual(fields[0]["managed_type"], "Action<State>?")
+
+    def test_scaffold_infers_string_callback_type(self) -> None:
+        """const char* parameter maps to Action<string?>? type."""
+        idl = self._make_minimal_idl(
+            structs={
+                "foo_log_callbacks_t": {
+                    "fields": [
+                        {"name": "on_message", "declaration": "foo_log_cb on_message"},
+                    ]
+                }
+            },
+            cb_typedefs=[
+                {
+                    "name": "foo_log_cb",
+                    "declaration": "typedef void (FOO_CALL *foo_log_cb)(void* user_data, const char* message);",
+                }
+            ],
+        )
+        result = self.scaffold_mod.scaffold(idl, "FooLib", None)
+        cbs = result["callbacks"]
+        self.assertEqual(len(cbs), 1)
+        fields = cbs[0]["fields"]
+        self.assertEqual(len(fields), 1)
+        self.assertEqual(fields[0]["managed_type"], "Action<string?>?")
+
+    def test_scaffold_update_mode_merges_new_handles(self) -> None:
+        """--update mode adds new handles without overwriting existing ones."""
+        existing = {
+            "schema_version": 2,
+            "namespace": "FooLib",
+            "callbacks": [],
+            "handle_api": [
+                {"class": "Session", "members": [{"line": "// existing custom member"}]}
+            ],
+        }
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            opaque_types={
+                "foo_session_t": {"release": "foo_session_release"},
+                "foo_track_t": {"release": "foo_track_release"},
+            },
+        )
+        generated = self.scaffold_mod.scaffold(idl, "FooLib", None)
+        merged, stats = self.scaffold_mod._update_existing(existing, generated)
+
+        handle_classes = [h["class"] for h in merged["handle_api"]]
+        # Session existed, should be kept
+        self.assertIn("Session", handle_classes)
+        # Track is new, should be added
+        self.assertIn("Track", handle_classes)
+        # Existing Session entry should be preserved unchanged
+        session_entry = next(h for h in merged["handle_api"] if h["class"] == "Session")
+        self.assertEqual(session_entry["members"], [{"line": "// existing custom member"}])
+        self.assertEqual(stats["added_handles"], 1)
+        self.assertEqual(stats["kept_handles"], 1)
+
+    def test_scaffold_update_mode_keeps_existing_callbacks(self) -> None:
+        """Existing customized callbacks are not overwritten in --update mode."""
+        existing = {
+            "schema_version": 2,
+            "namespace": "FooLib",
+            "callbacks": [
+                {
+                    "class": "EventCallbacks",
+                    "fields": [
+                        {"managed_name": "OnReady", "managed_type": "Action<int>?", "assignment_lines": ["custom"]}
+                    ],
+                }
+            ],
+            "handle_api": [],
+        }
+        idl = self._make_minimal_idl(
+            structs={
+                "foo_event_callbacks_t": {
+                    "fields": [{"name": "on_ready", "declaration": "foo_ready_cb on_ready"}]
+                },
+                "foo_new_callbacks_t": {
+                    "fields": [{"name": "on_done", "declaration": "foo_done_cb on_done"}]
+                },
+            },
+            cb_typedefs=[
+                {"name": "foo_ready_cb", "declaration": "typedef void (FOO_CALL *foo_ready_cb)(void* user_data);"},
+                {"name": "foo_done_cb", "declaration": "typedef void (FOO_CALL *foo_done_cb)(void* user_data);"},
+            ],
+        )
+        generated = self.scaffold_mod.scaffold(idl, "FooLib", None)
+        merged, stats = self.scaffold_mod._update_existing(existing, generated)
+
+        cb_classes = [c["class"] for c in merged["callbacks"]]
+        self.assertIn("EventCallbacks", cb_classes)
+        self.assertIn("NewCallbacks", cb_classes)
+        # Existing EventCallbacks should be unchanged
+        event_cb = next(c for c in merged["callbacks"] if c["class"] == "EventCallbacks")
+        self.assertEqual(event_cb["fields"][0]["assignment_lines"], ["custom"])
+        self.assertEqual(stats["added_callbacks"], 1)
+        self.assertEqual(stats["kept_callbacks"], 1)
+
+    def test_scaffold_managed_bindings_generates_handles(self) -> None:
+        """scaffold_managed_bindings generates correct managed.json from opaque_types."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            opaque_types={
+                "foo_session_t": {"release": "foo_session_release", "retain": "foo_session_retain"},
+                "foo_track_t": {"release": "foo_track_release"},
+            },
+        )
+        result = self.bindings_mod.scaffold_managed_bindings(idl, "FooLib", None)
+        handles = result["handles"]
+        # Should be sorted by c_type_name
+        self.assertEqual(len(handles), 2)
+        session = next(h for h in handles if h["cs_type"] == "Session")
+        track = next(h for h in handles if h["cs_type"] == "Track")
+        self.assertEqual(session["c_handle_type"], "foo_session_t*")
+        self.assertEqual(session["namespace"], "FooLib")
+        self.assertEqual(session["release"], "foo_session_release")
+        self.assertEqual(session["retain"], "foo_session_retain")
+        self.assertEqual(track["release"], "foo_track_release")
+        self.assertNotIn("retain", track)
 
 
 if __name__ == "__main__":

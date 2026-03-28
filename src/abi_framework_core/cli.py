@@ -17,6 +17,7 @@ from .commands import (
     command_regen_baselines,
     command_release_prepare,
     command_scaffold_managed_api,
+    command_scaffold_managed_bindings,
     command_snapshot,
     command_sync,
     command_validate_plugin_manifest,
@@ -306,9 +307,24 @@ def build_parser() -> argparse.ArgumentParser:
     scaffold_cmd.add_argument("--out", help="Output path (default: derived from IDL path).")
     scaffold_cmd.add_argument("--symbol-prefix", default=None, help="Symbol prefix override.")
     scaffold_cmd.add_argument("--force", action="store_true", help="Overwrite existing file.")
+    scaffold_cmd.add_argument("--update", action="store_true", help="Merge new handles/callbacks into existing file.")
     scaffold_cmd.add_argument("--check", action="store_true", help="Fail if output would change.")
     scaffold_cmd.add_argument("--dry-run", action="store_true", help="Do not write files.")
     scaffold_cmd.set_defaults(func=command_scaffold_managed_api)
+
+    scaffold_bindings = sub.add_parser(
+        "scaffold-managed-bindings",
+        help="Scaffold managed.json (SafeHandle definitions) from IDL opaque_types.",
+    )
+    scaffold_bindings.add_argument("--repo-root", default=".")
+    scaffold_bindings.add_argument("--idl", required=True)
+    scaffold_bindings.add_argument("--namespace", required=True, help="C# namespace for handles.")
+    scaffold_bindings.add_argument("--out", help="Output path (default: derived from IDL).")
+    scaffold_bindings.add_argument("--symbol-prefix", default=None)
+    scaffold_bindings.add_argument("--force", action="store_true")
+    scaffold_bindings.add_argument("--check", action="store_true")
+    scaffold_bindings.add_argument("--dry-run", action="store_true")
+    scaffold_bindings.set_defaults(func=command_scaffold_managed_bindings)
 
     return parser
 

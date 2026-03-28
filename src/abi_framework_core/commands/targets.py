@@ -141,7 +141,10 @@ def command_scaffold_managed_api(args: argparse.Namespace) -> int:
     if str(generator_sdk) not in sys.path:
         sys.path.insert(0, str(generator_sdk))
 
-    # Import the scaffold module
+    CORE_SRC = Path(__file__).resolve().parents[4] / "abi_codegen_core" / "src"
+    if str(CORE_SRC) not in sys.path:
+        sys.path.insert(0, str(CORE_SRC))
+
     try:
         import managed_api_scaffold_generator as scaffold_mod  # type: ignore[import]
     except ImportError:
@@ -151,10 +154,6 @@ def command_scaffold_managed_api(args: argparse.Namespace) -> int:
         if str(sdk_path) not in sys.path:
             sys.path.insert(0, str(sdk_path))
         import managed_api_scaffold_generator as scaffold_mod  # type: ignore[import]
-
-    CORE_SRC = Path(__file__).resolve().parents[4] / "abi_codegen_core" / "src"
-    if str(CORE_SRC) not in sys.path:
-        sys.path.insert(0, str(CORE_SRC))
 
     from abi_codegen_core.common import load_json_object, write_if_changed  # type: ignore[import]
 
@@ -170,21 +169,86 @@ def command_scaffold_managed_api(args: argparse.Namespace) -> int:
         out_path = idl_path.parent.parent.parent / "bindings" / f"{stem}.managed_api.source.json"
 
     force = getattr(args, "force", False)
+    update = getattr(args, "update", False)
+    check = getattr(args, "check", False)
+    dry_run = getattr(args, "dry_run", False)
+
+    idl = load_json_object(idl_path)
+    generated = scaffold_mod.scaffold(idl, args.namespace, getattr(args, "symbol_prefix", None))
+
+    if update and out_path.exists():
+        existing = load_json_object(out_path)
+        merged, stats = scaffold_mod._update_existing(existing, generated)
+        content = _json.dumps(merged, ensure_ascii=False, indent=2) + "\n"
+        if not check and not dry_run:
+            print(f"scaffold --update: added {stats['added_callbacks']} callbacks, "
+                  f"{stats['added_handles']} handles; "
+                  f"kept {stats['kept_callbacks']} callbacks, {stats['kept_handles']} handles")
+    elif out_path.exists() and not force and not check and not dry_run:
+        print(f"scaffold-managed-api: '{out_path}' exists. Use --force to overwrite or --update to merge.")
+        return 0
+    else:
+        content = _json.dumps(generated, ensure_ascii=False, indent=2) + "\n"
+
+    status = write_if_changed(out_path, content, check, dry_run)
+    if status == 0 and not check and not dry_run:
+        if not update:
+            print(f"Scaffolded: {out_path}")
+        _print_next_steps(out_path)
+    return status
+
+
+def command_scaffold_managed_bindings(args: argparse.Namespace) -> int:
+    """Scaffold managed.json (SafeHandle definitions) from IDL opaque_types."""
+    generator_sdk = Path(__file__).resolve().parents[3] / "generator_sdk"
+    if str(generator_sdk) not in sys.path:
+        sys.path.insert(0, str(generator_sdk))
+
+    CORE_SRC = Path(__file__).resolve().parents[4] / "abi_codegen_core" / "src"
+    if str(CORE_SRC) not in sys.path:
+        sys.path.insert(0, str(CORE_SRC))
+
+    try:
+        import managed_bindings_scaffold_generator as bindings_mod  # type: ignore[import]
+    except ImportError:
+        repo_root = Path(getattr(args, "repo_root", ".")).resolve()
+        sdk_path = repo_root / "tools" / "abi_framework" / "generator_sdk"
+        if str(sdk_path) not in sys.path:
+            sys.path.insert(0, str(sdk_path))
+        import managed_bindings_scaffold_generator as bindings_mod  # type: ignore[import]
+
+    from abi_codegen_core.common import load_json_object, write_if_changed  # type: ignore[import]
+
+    idl_path = Path(args.idl).resolve()
+    out_path_raw = getattr(args, "out", None)
+    if out_path_raw:
+        out_path = Path(out_path_raw).resolve()
+    else:
+        stem = idl_path.stem
+        for suf in (".idl",):
+            stem = stem.removesuffix(suf)
+        out_path = idl_path.parent.parent.parent / "bindings" / f"{stem}.managed.json"
+
+    force = getattr(args, "force", False)
     check = getattr(args, "check", False)
     dry_run = getattr(args, "dry_run", False)
 
     if out_path.exists() and not force and not check and not dry_run:
-        print(f"scaffold-managed-api: output already exists at '{out_path}'. Use --force to overwrite.")
+        print(f"scaffold-managed-bindings: '{out_path}' exists. Use --force to overwrite.")
         return 0
 
     idl = load_json_object(idl_path)
-    result = scaffold_mod.scaffold(idl, args.namespace, getattr(args, "symbol_prefix", None))
+    result = bindings_mod.scaffold_managed_bindings(idl, args.namespace, getattr(args, "symbol_prefix", None))
     content = _json.dumps(result, ensure_ascii=False, indent=2) + "\n"
-
     status = write_if_changed(out_path, content, check, dry_run)
     if status == 0 and not check and not dry_run:
         print(f"Scaffolded: {out_path}")
-        _print_next_steps(out_path)
+        print("")
+        print("Next steps:")
+        print(f"  1. Review generated handles in {out_path.name}")
+        print("  2. Verify release/retain functions match your C API")
+        print("  3. Run: abi_framework scaffold-managed-api --idl <idl> --namespace <ns>")
+        print("  4. Run: abi_framework codegen --config abi/config.json --skip-binary")
     return status
 
 
