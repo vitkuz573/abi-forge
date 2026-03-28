@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/vitkuz573/abi-forge/schemas/report.schema.json",
+  "$id": "https://raw.githubusercontent.com/vitkuz573/abi-forge/main/schemas/report.schema.json",
   "title": "abi_framework compare report",
   "type": "object",
   "required": ["status", "change_classification", "required_bump", "errors", "warnings"],

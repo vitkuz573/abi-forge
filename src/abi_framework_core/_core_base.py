@@ -24,9 +24,9 @@ from typing import Any
 
 TOOL_VERSION = "1.0.0"
 IDL_SCHEMA_VERSION = 1
-IDL_SCHEMA_URI_V1 = "https://github.com/vitkuz573/abi-forge/schemas/idl.schema.v1.json"
+IDL_SCHEMA_URI_V1 = "https://raw.githubusercontent.com/vitkuz573/abi-forge/main/schemas/idl.schema.v1.json"
 ATTESTATION_PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
-ATTESTATION_BUILD_TYPE = "https://github.com/vitkuz573/abi-forge/release-prepare@v1"
+ATTESTATION_BUILD_TYPE = "https://raw.githubusercontent.com/vitkuz573/abi-forge/main/release-prepare@v1"
 DEFAULT_WAIVER_REQUIREMENTS = {
     "require_owner": False,
     "require_reason": False,

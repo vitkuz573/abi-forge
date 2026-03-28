@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/vitkuz573/abi-forge/schemas/snapshot.schema.json",
+  "$id": "https://raw.githubusercontent.com/vitkuz573/abi-forge/main/schemas/snapshot.schema.json",
   "title": "abi_framework snapshot",
   "type": "object",
   "required": ["tool", "target", "generated_at_utc", "abi_version", "header", "bindings", "binary"],
