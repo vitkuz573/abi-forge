@@ -42,6 +42,23 @@ class AbiFrameworkError(Exception):
     pass
 
 
+def get_abi_forge_sdk_path() -> Path | None:
+    """Return the path to the abi-forge generator SDK (works with pip install and submodule)."""
+    try:
+        import abi_forge_sdk as _sdk  # type: ignore[import]
+        return Path(_sdk.__file__).resolve().parent
+    except ImportError:
+        pass
+    # Fallback: walk up from this file to find generator_sdk/ (submodule / dev layout)
+    p = Path(__file__).resolve().parent
+    for _ in range(7):
+        candidate = p / "generator_sdk"
+        if candidate.is_dir() and (candidate / "plugin.manifest.json").is_file():
+            return candidate
+        p = p.parent
+    return None
+
+
 @dataclass(frozen=True)
 class AbiVersion:
     major: int

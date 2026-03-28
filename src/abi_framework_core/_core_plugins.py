@@ -290,13 +290,21 @@ def resolve_plugin_path_token(
         return None
     if normalized.startswith("-"):
         return None
-    if normalized in {"{check}", "{dry_run}", "{idl}", "{target}"}:
+    if normalized in {"{check}", "{dry_run}", "{idl}", "{target}", "{abi_forge_sdk}"}:
         return None
 
     if "{repo_root}" in normalized:
         normalized = normalized.replace("{repo_root}", str(repo_root))
     if target_name is not None and "{target}" in normalized:
         normalized = normalized.replace("{target}", target_name)
+    if "{abi_forge_sdk}" in normalized:
+        sdk_path = get_abi_forge_sdk_path()
+        if sdk_path is None:
+            raise AbiFrameworkError(
+                "Cannot resolve {abi_forge_sdk}: abi-forge SDK not found. "
+                "Install with: pip install abi-forge"
+            )
+        normalized = normalized.replace("{abi_forge_sdk}", str(sdk_path))
 
     if "{" in normalized and "}" in normalized:
         return None

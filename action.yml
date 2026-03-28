@@ -1,0 +1,117 @@
+name: abi-forge
+description: ABI governance and polyglot binding generator for C shared libraries
+author: vitkuz573
+
+inputs:
+  config:
+    description: Path to abi/config.json (relative to repo root)
+    required: false
+    default: abi/config.json
+  repo-root:
+    description: Repository root directory
+    required: false
+    default: ${{ github.workspace }}
+  command:
+    description: "Command to run: generate, codegen, verify-all, waiver-audit, validate-plugin-manifest (default: run full pipeline)"
+    required: false
+    default: pipeline
+  skip-binary:
+    description: Skip binary export extraction
+    required: false
+    default: "true"
+  fail-on-sync:
+    description: Fail if bindings are out of sync
+    required: false
+    default: "true"
+  check:
+    description: Check mode — fail if generated files differ from committed
+    required: false
+    default: "true"
+  output-dir:
+    description: Directory for report artifacts
+    required: false
+    default: artifacts/abi
+  version:
+    description: abi-forge version to install (e.g. 1.0.0 or latest)
+    required: false
+    default: latest
+
+outputs:
+  result:
+    description: Pipeline result (pass or fail)
+    value: ${{ steps.run.outputs.result }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install abi-forge
+      shell: bash
+      run: |
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          pip install abi-forge --break-system-packages --quiet 2>/dev/null || pip install abi-forge --quiet
+        else
+          pip install "abi-forge==${{ inputs.version }}" --break-system-packages --quiet 2>/dev/null || pip install "abi-forge==${{ inputs.version }}" --quiet
+        fi
+
+    - name: Run abi-forge pipeline
+      id: run
+      shell: bash
+      run: |
+        set -euo pipefail
+        REPO_ROOT="${{ inputs.repo-root }}"
+        CONFIG="${{ inputs.config }}"
+        SKIP_BINARY="${{ inputs.skip-binary }}"
+        CHECK="${{ inputs.check }}"
+        FAIL_ON_SYNC="${{ inputs.fail-on-sync }}"
+        OUTPUT_DIR="${{ inputs.output-dir }}"
+        COMMAND="${{ inputs.command }}"
+
+        SKIP_BIN_FLAG=""
+        [ "$SKIP_BINARY" = "true" ] && SKIP_BIN_FLAG="--skip-binary"
+        CHECK_FLAG=""
+        [ "$CHECK" = "true" ] && CHECK_FLAG="--check"
+        SYNC_FLAG=""
+        [ "$FAIL_ON_SYNC" = "true" ] && SYNC_FLAG="--fail-on-sync"
+
+        mkdir -p "$OUTPUT_DIR"
+        EXIT_CODE=0
+
+        if [ "$COMMAND" = "pipeline" ]; then
+          abi_framework validate-plugin-manifest --repo-root "$REPO_ROOT" --config "$CONFIG" || EXIT_CODE=$?
+
+          abi_framework generate \
+            --repo-root "$REPO_ROOT" \
+            --config "$CONFIG" \
+            $SKIP_BIN_FLAG $CHECK_FLAG $SYNC_FLAG \
+            --report-json "$OUTPUT_DIR/generate.report.json" || EXIT_CODE=$?
+
+          abi_framework codegen \
+            --repo-root "$REPO_ROOT" \
+            --config "$CONFIG" \
+            $SKIP_BIN_FLAG $CHECK_FLAG $SYNC_FLAG \
+            --report-json "$OUTPUT_DIR/codegen.report.json" || EXIT_CODE=$?
+
+          abi_framework verify-all \
+            --repo-root "$REPO_ROOT" \
+            --config "$CONFIG" \
+            $SKIP_BIN_FLAG \
+            --output-dir "$OUTPUT_DIR" || EXIT_CODE=$?
+
+          abi_framework waiver-audit \
+            --config "$CONFIG" \
+            --output "$OUTPUT_DIR/waiver.audit.report.json" \
+            --fail-on-expired \
+            --fail-on-missing-metadata || EXIT_CODE=$?
+        else
+          abi_framework "$COMMAND" \
+            --repo-root "$REPO_ROOT" \
+            --config "$CONFIG" \
+            $SKIP_BIN_FLAG $CHECK_FLAG $SYNC_FLAG || EXIT_CODE=$?
+        fi
+
+        if [ $EXIT_CODE -eq 0 ]; then
+          echo "result=pass" >> "$GITHUB_OUTPUT"
+        else
+          echo "result=fail" >> "$GITHUB_OUTPUT"
+          exit $EXIT_CODE
+        fi

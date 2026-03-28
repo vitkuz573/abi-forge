@@ -13,7 +13,7 @@
         "kind": "external",
         "command": [
           "python3",
-          "{repo_root}/tools/abi_framework/generator_sdk/symbol_contract_generator.py",
+          "{abi_forge_sdk}/symbol_contract_generator.py",
           "--idl",
           "{idl}",
           "--spec",
@@ -73,7 +73,7 @@
         "kind": "external",
         "command": [
           "python3",
-          "{repo_root}/tools/abi_framework/generator_sdk/native_exports_generator.py",
+          "{abi_forge_sdk}/native_exports_generator.py",
           "--idl", "{idl}",
           "--out", "{repo_root}/native/src/{target}.exports.cpp",
           "--impl-header", "{repo_root}/native/src/{target}_impl.h",
@@ -109,7 +109,7 @@
         "kind": "external",
         "command": [
           "python3",
-          "{repo_root}/tools/abi_framework/generator_sdk/managed_api_metadata_generator.py",
+          "{abi_forge_sdk}/managed_api_metadata_generator.py",
           "--idl", "{idl}",
           "--source", "{repo_root}/abi/bindings/{target}.managed_api.source.json",
           "--out", "{repo_root}/abi/bindings/{target}.managed_api.json",
@@ -147,7 +147,7 @@
         "kind": "external",
         "command": [
           "python3",
-          "{repo_root}/tools/abi_framework/generator_sdk/managed_api_scaffold_generator.py",
+          "{abi_forge_sdk}/managed_api_scaffold_generator.py",
           "--idl", "{idl}",
           "--namespace", "TODO_NAMESPACE",
           "--out", "{repo_root}/abi/bindings/{target}.managed_api.source.json",
@@ -182,7 +182,7 @@
         "kind": "external",
         "command": [
           "python3",
-          "{repo_root}/tools/abi_framework/generator_sdk/managed_bindings_scaffold_generator.py",
+          "{abi_forge_sdk}/managed_bindings_scaffold_generator.py",
           "--idl", "{idl}",
           "--namespace", "TODO_NAMESPACE",
           "--out", "{repo_root}/abi/bindings/{target}.managed.json",
@@ -215,7 +215,7 @@
         "kind": "external",
         "command": [
           "python3",
-          "{repo_root}/tools/abi_framework/generator_sdk/python_bindings_generator.py",
+          "{abi_forge_sdk}/python_bindings_generator.py",
           "--idl", "{idl}",
           "--out", "{repo_root}/abi/generated/{target}/{target}_ctypes.py",
           "{check}",
@@ -247,7 +247,7 @@
         "kind": "external",
         "command": [
           "python3",
-          "{repo_root}/tools/abi_framework/generator_sdk/rust_ffi_generator.py",
+          "{abi_forge_sdk}/rust_ffi_generator.py",
           "--idl", "{idl}",
           "--out", "{repo_root}/abi/generated/{target}/{target}_ffi.rs",
           "{check}",
@@ -279,7 +279,7 @@
         "kind": "external",
         "command": [
           "python3",
-          "{repo_root}/tools/abi_framework/generator_sdk/typescript_bindings_generator.py",
+          "{abi_forge_sdk}/typescript_bindings_generator.py",
           "--idl", "{idl}",
           "--out", "{repo_root}/abi/generated/{target}/{target}_ffi.ts",
           "{check}",
@@ -311,7 +311,7 @@
         "kind": "external",
         "command": [
           "python3",
-          "{repo_root}/tools/abi_framework/generator_sdk/go_bindings_generator.py",
+          "{abi_forge_sdk}/go_bindings_generator.py",
           "--idl", "{idl}",
           "--out", "{repo_root}/abi/generated/{target}/{target}_ffi.go",
           "{check}",
@@ -343,7 +343,7 @@
         "kind": "external",
         "command": [
           "python3",
-          "{repo_root}/tools/abi_framework/generator_sdk/managed_api_codegen.py",
+          "{abi_forge_sdk}/managed_api_codegen.py",
           "--idl",
           "{idl}",
           "--managed-api",

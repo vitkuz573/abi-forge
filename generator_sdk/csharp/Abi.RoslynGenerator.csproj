@@ -8,6 +8,22 @@
     <TrimMode>copyused</TrimMode>
     <IsAotCompatible>false</IsAotCompatible>
     <EnableAotAnalyzer>false</EnableAotAnalyzer>
+
+    <!-- NuGet package metadata -->
+    <PackageId>Abi.RoslynGenerator</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Vitaly Kuzyaev</Authors>
+    <Description>Roslyn source generator for abi-forge: generates C# P/Invoke interop and managed API wrappers from an IDL JSON produced by the abi-forge pipeline.</Description>
+    <PackageTags>roslyn;source-generator;abi;pinvoke;interop;codegen</PackageTags>
+    <PackageProjectUrl>https://github.com/vitkuz573/abi-forge</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/vitkuz573/abi-forge</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <NoDefaultExcludes>true</NoDefaultExcludes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,5 +34,14 @@
   <ItemGroup>
     <AdditionalFiles Include="AnalyzerReleases.Shipped.md" />
     <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />
+  </ItemGroup>
+
+  <!-- Bundle the analyzer DLL into the NuGet analyzers folder -->
+  <ItemGroup>
+    <None Include="$(OutputPath)$(AssemblyName).dll"
+          Pack="true"
+          PackagePath="analyzers/dotnet/cs"
+          Visible="false" />
+    <None Include="README.md" Pack="true" PackagePath="" />
   </ItemGroup>
 </Project>

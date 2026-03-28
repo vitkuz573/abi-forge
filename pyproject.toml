@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abi-forge"
+version = "1.0.0"
+description = "ABI governance and polyglot binding generator for C shared libraries"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Vitaly Kuzyaev", email = "vitkuz573@gmail.com" }]
+keywords = ["abi", "codegen", "bindings", "ffi", "interop"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Build Tools",
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/vitkuz573/abi-forge"
+Repository = "https://github.com/vitkuz573/abi-forge"
+Issues = "https://github.com/vitkuz573/abi-forge/issues"
+
+[project.scripts]
+abi_framework = "abi_framework_core.cli:main"
+
+[project.entry-points."abi_forge.plugins"]
+generator_sdk = "abi_forge_sdk:MANIFEST_PATH"
+
+[tool.setuptools]
+package-dir = {"abi_framework_core" = "src/abi_framework_core", "abi_codegen_core" = "abi_codegen_core/src/abi_codegen_core", "abi_forge_sdk" = "generator_sdk"}
+packages = [
+    "abi_framework_core",
+    "abi_framework_core.commands",
+    "abi_codegen_core",
+    "abi_forge_sdk",
+]
+
+[tool.setuptools.package-data]
+"abi_forge_sdk" = ["plugin.manifest.json"]
+"abi_framework_core" = ["py.typed"]

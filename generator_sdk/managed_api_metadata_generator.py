@@ -11,9 +11,12 @@ from typing import Any
 TOOL_PATH = "tools/abi_framework/generator_sdk/managed_api_metadata_generator.py"
 DEFAULT_NATIVE_CALL_PATTERN = r"\bNativeMethods\.([A-Za-z_][A-Za-z0-9_]*)\b"
 
-CORE_SRC = Path(__file__).resolve().parents[1] / "abi_codegen_core" / "src"
-if str(CORE_SRC) not in sys.path:
-    sys.path.insert(0, str(CORE_SRC))
+try:
+    import abi_codegen_core  # noqa: F401 — installed via pip
+except ImportError:
+    _CORE_SRC = Path(__file__).resolve().parents[1] / "abi_codegen_core" / "src"
+    if str(_CORE_SRC) not in sys.path:
+        sys.path.insert(0, str(_CORE_SRC))
 
 from abi_codegen_core.common import load_json_object, write_if_changed
 from abi_codegen_core.required_functions import derive_required_functions
