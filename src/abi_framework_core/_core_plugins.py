@@ -344,6 +344,14 @@ def resolve_generator_manifest_path(
     manifest_token = generator.get("manifest")
     if isinstance(manifest_token, str) and manifest_token:
         return resolve_plugin_path_token(manifest_token, repo_root, target_name=target_name)
+    # Auto-resolve SDK manifest when only 'plugin' is specified
+    plugin_name = generator.get("plugin")
+    if isinstance(plugin_name, str) and plugin_name:
+        sdk_path = get_abi_forge_sdk_path()
+        if sdk_path is not None:
+            sdk_manifest = sdk_path / "plugin.manifest.json"
+            if sdk_manifest.is_file():
+                return sdk_manifest
     if not discover_from_command:
         return None
     command = generator.get("command")
