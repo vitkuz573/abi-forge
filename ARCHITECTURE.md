@@ -32,8 +32,21 @@ tools/abi_framework/
       targets.py                      # list-targets/init-target
     cli.py                            # argparse wiring and process exit behavior
   schemas/                            # JSON schemas (config/snapshot/report/idl)
+  generator_sdk/
+    *.py                              # Target-agnostic external generator scripts (Python, Rust, Go, TypeScript, …)
+    plugin.manifest.json              # Generator plugin registry
+    csharp/                           # C# Roslyn source generator (compiled; different runtime from Python generators)
+      Abi.RoslynGenerator.csproj      # MSBuild project — builds a netstandard2.0 Roslyn analyzer DLL
+      AbiInteropGenerator.cs          # IIncrementalGenerator entry point
+      AbiInteropSourceEmitter.cs      # P/Invoke emission
+      AbiInteropTypesSourceEmitter.cs # Enum/struct/handle emission
+      ManagedApiSourceEmitter.cs      # Managed API layer emission
   tests/                              # unit/integration tests for stable behavior
 ```
+
+> **Note on `generator_sdk/csharp/`:** The C# generator lives here rather than next to the Python generators
+> because it is a compiled Roslyn analyzer (netstandard2.0 DLL) that runs inside the .NET compiler pipeline,
+> not an external CLI script. It is invoked automatically by MSBuild via `ProjectReference … OutputItemType="Analyzer"`.
 
 ## Layer Responsibilities
 

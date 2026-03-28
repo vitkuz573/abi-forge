@@ -813,7 +813,7 @@ internal static class ManagedApiSourceEmitter
 
             var ownerStem = owner.Handle == null
                 ? string.Empty
-                : BuildHandleStem(ParseCTypeInfo(owner.Handle.CHandleType).BaseType);
+                : BuildHandleStem(ParseCTypeInfo(owner.Handle.CHandleType).BaseType, idlModel.SymbolPrefix);
             var method = BuildAbiForwardMethod(
                 function,
                 idlModel,
@@ -1011,7 +1011,7 @@ internal static class ManagedApiSourceEmitter
         int ownerParameterOffset,
         HashSet<string> usedNames)
     {
-        var methodStem = DeriveFunctionStem(function.Name, ownerStem);
+        var methodStem = DeriveFunctionStem(function.Name, ownerStem, idlModel.SymbolPrefix);
         var methodName = EnsureUniqueMethodName(
             BuildPascalIdentifier(methodPrefix + "_" + methodStem, "AbiCall"),
             usedNames);
@@ -1042,7 +1042,7 @@ internal static class ManagedApiSourceEmitter
             parameters,
             invocationArguments,
             function.Name,
-            IsStatusLikeFunction(function, ownerParameterOffset),
+            IsStatusLikeFunction(function, ownerParameterOffset, idlModel.SymbolPrefix),
             asyncSpec);
     }
 
@@ -1324,10 +1324,11 @@ internal static class ManagedApiSourceEmitter
             string.Equals(info.BaseType, "char", StringComparison.Ordinal);
     }
 
-    private static bool IsStatusLikeFunction(FunctionSpec function, int ownerParameterOffset)
+    private static bool IsStatusLikeFunction(FunctionSpec function, int ownerParameterOffset, string symbolPrefix = "")
     {
         var returnType = StripCTypeQualifiers(function.CReturnType);
-        if (string.Equals(returnType, "lrtc_result_t", StringComparison.Ordinal))
+        var resultTypeName = symbolPrefix + "result_t";
+        if (string.Equals(returnType, resultTypeName, StringComparison.Ordinal))
         {
             return true;
         }
@@ -2436,12 +2437,12 @@ internal static class ManagedApiSourceEmitter
         return string.Equals(parameterInfo.BaseType, handleType.BaseType, StringComparison.Ordinal);
     }
 
-    private static string BuildHandleStem(string handleBaseType)
+    private static string BuildHandleStem(string handleBaseType, string symbolPrefix = "")
     {
         var stem = handleBaseType;
-        if (stem.StartsWith("lrtc_", StringComparison.Ordinal))
+        if (!string.IsNullOrEmpty(symbolPrefix) && stem.StartsWith(symbolPrefix, StringComparison.Ordinal))
         {
-            stem = stem.Substring("lrtc_".Length);
+            stem = stem.Substring(symbolPrefix.Length);
         }
 
         if (stem.EndsWith("_t", StringComparison.Ordinal))
@@ -2452,19 +2453,22 @@ internal static class ManagedApiSourceEmitter
         return stem;
     }
 
-    private static string DeriveFunctionStem(string functionName, string handleStem)
+    private static string DeriveFunctionStem(string functionName, string handleStem, string symbolPrefix = "")
     {
-        var handlePrefix = "lrtc_" + handleStem + "_";
-        if (functionName.StartsWith(handlePrefix, StringComparison.Ordinal) &&
-            functionName.Length > handlePrefix.Length)
+        if (!string.IsNullOrEmpty(symbolPrefix))
         {
-            return functionName.Substring(handlePrefix.Length);
-        }
+            var handlePrefix = symbolPrefix + handleStem + "_";
+            if (functionName.StartsWith(handlePrefix, StringComparison.Ordinal) &&
+                functionName.Length > handlePrefix.Length)
+            {
+                return functionName.Substring(handlePrefix.Length);
+            }
 
-        if (functionName.StartsWith("lrtc_", StringComparison.Ordinal) &&
-            functionName.Length > "lrtc_".Length)
-        {
-            return functionName.Substring("lrtc_".Length);
+            if (functionName.StartsWith(symbolPrefix, StringComparison.Ordinal) &&
+                functionName.Length > symbolPrefix.Length)
+            {
+                return functionName.Substring(symbolPrefix.Length);
+            }
         }
 
         return functionName;

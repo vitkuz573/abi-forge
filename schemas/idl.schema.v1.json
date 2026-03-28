@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lumenrtc.dev/abi_framework/idl.schema.v1.json",
+  "$id": "https://github.com/vitkuz573/abi-forge/schemas/idl.schema.v1.json",
   "title": "abi_framework IDL v1",
   "type": "object",
   "required": [

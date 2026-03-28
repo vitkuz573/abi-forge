@@ -9,4 +9,4 @@ project-specific generator plugins:
 - Native export/forwarder rendering from ABI IDL `functions`.
 - Required-native-function discovery from metadata text patterns.
 
-`tools/lumenrtc_codegen` consumes this package as a reference plugin layer.
+Generator plugins that need these helpers can consume this package directly.

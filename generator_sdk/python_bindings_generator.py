@@ -280,7 +280,7 @@ def generate_bindings(
     symbol_prefix_override: str | None = None,
 ) -> str:
     sp = get_symbol_prefix(idl, symbol_prefix_override)
-    target = str(idl.get("target") or "lumenrtc")
+    target = str(idl.get("target") or "mylib")
     target_upper = target.upper().replace("-", "_")
 
     opaque_types = get_opaque_types(idl)
@@ -403,7 +403,7 @@ def generate_bindings(
             continue
 
         # Extract return type from declaration
-        # e.g. typedef void (LUMENRTC_CALL *lrtc_sdp_success_cb)(...)
+        # e.g. typedef void (MYLIB_CALL *mylib_sdp_success_cb)(...)
         ret_match = re.match(r"typedef\s+(\w[\w\s\*]*?)\s*\(", decl)
         ret_c = ret_match.group(1).strip() if ret_match else "void"
         ret_ct = c_type_to_ctypes(ret_c, opaque_set, sp)
@@ -523,7 +523,7 @@ def generate_bindings(
         retain_fn = str(ot_info.get("retain") or "")
 
         # Compute the method prefix to strip from function names
-        # e.g. lrtc_audio_device_get_name → strip "lrtc_" → audio_device_get_name
+        # e.g. mylib_audio_device_get_name → strip "{prefix}" → audio_device_get_name
         # then in class strip "audio_device_" → get_name
         bare_type = strip_prefix(ot_name, sp)  # e.g. "audio_device_t"
         bare_type = strip_suffix(strip_suffix(bare_type, "_t"), "_s")  # "audio_device"

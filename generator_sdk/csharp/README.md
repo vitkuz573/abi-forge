@@ -1,13 +1,18 @@
-# abi_roslyn_codegen
+# generator_sdk/csharp — Roslyn C# source generator
 
 Roslyn source generator that converts ABI metadata into C# interop code
 during compilation.
 
+> **Location note:** This generator lives under `generator_sdk/csharp/` rather than next to the
+> Python generators because it is a compiled Roslyn analyzer (netstandard2.0 DLL) that runs
+> inside the .NET compiler pipeline — not an external CLI script. It is wired via
+> `ProjectReference … OutputItemType="Analyzer"` in the consuming `.csproj`.
+
 ## Input
 
-- ABI IDL JSON (for example `abi/generated/lumenrtc/lumenrtc.idl.json`).
-- Managed handle metadata JSON (for example `abi/bindings/lumenrtc.managed.json`).
-- Managed API metadata JSON (for example `abi/bindings/lumenrtc.managed_api.json`).
+- ABI IDL JSON (for example `abi/generated/mylib/mylib.idl.json`; LumenRTC uses `abi/generated/lumenrtc/lumenrtc.idl.json`).
+- Managed handle metadata JSON (for example `abi/bindings/mylib.managed.json`).
+- Managed API metadata JSON (for example `abi/bindings/mylib.managed_api.json`).
 - MSBuild properties passed through `CompilerVisibleProperty`:
   - `AbiIdlPath`
   - `AbiManagedMetadataPath`
@@ -124,10 +129,12 @@ Violations are reported as source-generator diagnostics (`ABIGEN008`-`ABIGEN012`
 
 ## Integration
 
-`src/LumenRTC/LumenRTC.csproj` wires the generator as an analyzer project reference
-and passes IDL + managed metadata files as `AdditionalFiles`.
+Wire the generator from your `.csproj` as an analyzer project reference and pass IDL + managed
+metadata files as `AdditionalFiles`. For a complete example, see
+[LumenRTC](https://github.com/vitkuz573/LumenRTC) — its `src/LumenRTC/LumenRTC.csproj` references
+`tools/abi_framework/generator_sdk/csharp/Abi.RoslynGenerator.csproj`.
 
-Validation command:
+Validation command (LumenRTC example):
 
 ```bash
 dotnet build src/LumenRTC/LumenRTC.csproj

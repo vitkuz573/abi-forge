@@ -17,9 +17,9 @@
           "--idl",
           "{idl}",
           "--spec",
-          "{repo_root}/abi/bindings/lumenrtc.symbol_contract.sources.json",
+          "{repo_root}/abi/bindings/{target}.symbol_contract.sources.json",
           "--out",
-          "{repo_root}/abi/bindings/lumenrtc.symbol_contract.json",
+          "{repo_root}/abi/bindings/{target}.symbol_contract.json",
           "{check}",
           "{dry_run}"
         ]

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lumenrtc.dev/abi_framework/config.schema.v1.json",
+  "$id": "https://github.com/vitkuz573/abi-forge/schemas/config.schema.v1.json",
   "title": "abi_framework config",
   "type": "object",
   "required": ["targets"],

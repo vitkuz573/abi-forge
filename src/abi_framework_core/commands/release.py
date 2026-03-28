@@ -65,10 +65,10 @@ def write_cyclonedx_sbom(
         "version": 1,
         "metadata": {
             "timestamp": generated_at_utc,
-            "tools": [{"vendor": "LumenRTC", "name": "abi_framework", "version": TOOL_VERSION}],
+            "tools": [{"vendor": "abi-forge", "name": "abi_framework", "version": TOOL_VERSION}],
             "component": {
                 "type": "application",
-                "name": "lumenrtc-abi-release",
+                "name": "abi-forge-release",
                 "version": release_tag or "unversioned",
             },
         },
@@ -105,7 +105,7 @@ def write_release_attestation(
             },
             "runDetails": {
                 "builder": {
-                    "id": "lumenrtc.dev/abi_framework",
+                    "id": "github.com/vitkuz573/abi-forge",
                     "version": TOOL_VERSION,
                 },
                 "metadata": {

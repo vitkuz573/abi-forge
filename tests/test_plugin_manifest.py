@@ -16,7 +16,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_ROOT = Path(__file__).resolve().parent / "conformance"
 VALID_FIXTURE = FIXTURES_ROOT / "plugin_manifest.valid.json"
 INVALID_FIXTURE = FIXTURES_ROOT / "plugin_manifest.invalid.json"
-LUMENRTC_PLUGIN_MANIFEST = REPO_ROOT / "generator_sdk" / "plugin.manifest.json"
 SDK_PLUGIN_MANIFEST = REPO_ROOT / "generator_sdk" / "plugin.manifest.json"
 ABI_FRAMEWORK_ENTRYPOINT = REPO_ROOT / "abi_framework.py"
 ABI_CONFIG_PATH = REPO_ROOT / "abi_codegen_core" / "src" / "abi_codegen_core" / "common.py"
@@ -46,7 +45,7 @@ class PluginManifestValidationTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
 
     def test_validate_project_manifests(self) -> None:
-        manifests = [LUMENRTC_PLUGIN_MANIFEST, SDK_PLUGIN_MANIFEST]
+        manifests = [SDK_PLUGIN_MANIFEST]
         for manifest in manifests:
             with self.subTest(manifest=manifest.name):
                 exit_code = abi_framework.command_validate_plugin_manifest(

@@ -870,7 +870,7 @@ typedef void (LUMENRTC_CALL *lrtc_void_cb)(void* user_data);
     def test_validate_idl_payload_rejects_non_v1(self) -> None:
         payload = {
             "idl_schema_version": 0,
-            "idl_schema": "https://lumenrtc.dev/abi_framework/idl.schema.v1.json",
+            "idl_schema": "https://github.com/vitkuz573/abi-forge/schemas/idl.schema.v1.json",
             "tool": {"name": "abi_framework", "version": "test"},
             "target": "demo",
             "abi_version": {"major": 1, "minor": 0, "patch": 0},

@@ -6,7 +6,6 @@ See [LumenRTC](https://github.com/vitkuz573/LumenRTC) for a complete production 
 
 The key files to look at in LumenRTC:
 - `abi/config.json` — target definition, header path, generator plugins, policy
-- `tools/lumenrtc_codegen/plugin.manifest.json` — project-specific generator plugins
 - `scripts/abi.sh` / `scripts/abi.ps1` — convenience wrappers around `abi_framework.py`
 - `abi/bindings/lumenrtc.managed_api.source.json` — declarative C# managed API metadata
 - `abi/generated/lumenrtc/` — generated IDL + all language binding outputs

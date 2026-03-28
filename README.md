@@ -17,7 +17,7 @@ From a single C header, abi-forge produces a versioned IDL snapshot and generate
 
 | Language | Output | Mechanism |
 |----------|--------|-----------|
-| **C# (.NET)** | P/Invoke + SafeHandle wrappers + async layer | Roslyn source generator (`abi_roslyn_codegen/`) |
+| **C# (.NET)** | P/Invoke + SafeHandle wrappers + async layer | Roslyn source generator (`generator_sdk/csharp/`) |
 | **Python** | ctypes module with IntEnum, OOP handles, CFUNCTYPE | `generator_sdk/python_bindings_generator.py` |
 | **Rust** | `#[repr(C)]` enums + `extern "C"` block | `generator_sdk/rust_ffi_generator.py` |
 | **TypeScript** | ffi-napi + OOP wrappers with `[Symbol.dispose]` | `generator_sdk/typescript_bindings_generator.py` |

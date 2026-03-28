@@ -319,7 +319,7 @@ def generate_typescript_bindings(
     lib_name: str | None = None,
 ) -> str:
     sp = get_symbol_prefix(idl, symbol_prefix_override)
-    target = str(idl.get("target") or "lumenrtc")
+    target = str(idl.get("target") or "mylib")
     effective_lib_name = lib_name or f"lib{target}"
 
     opaque_types = get_opaque_types(idl)
@@ -592,7 +592,7 @@ def main() -> int:
     parser.add_argument("--idl", required=True, help="IDL JSON path.")
     parser.add_argument("--out", required=True, help="Output .ts file path.")
     parser.add_argument("--symbol-prefix", default=None, help="Symbol prefix override.")
-    parser.add_argument("--lib-name", default=None, help="Library name (e.g. liblumenrtc).")
+    parser.add_argument("--lib-name", default=None, help="Library name (e.g. libmylib).")
     parser.add_argument("--check", action="store_true", help="Fail if output would change.")
     parser.add_argument("--dry-run", action="store_true", help="Do not write files.")
     args = parser.parse_args()

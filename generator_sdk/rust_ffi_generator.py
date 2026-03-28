@@ -262,7 +262,7 @@ def generate_rust_ffi(
     symbol_prefix_override: str | None = None,
 ) -> str:
     sp = get_symbol_prefix(idl, symbol_prefix_override)
-    target = str(idl.get("target") or "lumenrtc")
+    target = str(idl.get("target") or "mylib")
 
     opaque_types = get_opaque_types(idl)
     enums = get_enums(idl)
@@ -329,7 +329,7 @@ def generate_rust_ffi(
     ]
     for ot_name in sorted(opaque_types.keys()):
         # Generate a PascalCase struct name without the symbol prefix
-        # e.g. lrtc_audio_device_t → LrtcAudioDevice (keep prefix in struct name for clarity)
+        # e.g. mylib_audio_device_t → MylibAudioDevice (keep prefix in struct name for clarity)
         bare = strip_suffix(strip_suffix(ot_name, "_t"), "_s")
         struct_name = snake_to_pascal(bare)
         ptr_type = infer_class_name(ot_name, sp) + "Ptr"

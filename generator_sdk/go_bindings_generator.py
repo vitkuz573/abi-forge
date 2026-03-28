@@ -238,7 +238,7 @@ def generate_go_bindings(
     lib_name: str | None = None,
 ) -> str:
     sp = get_symbol_prefix(idl, symbol_prefix_override)
-    target = str(idl.get("target") or "lumenrtc")
+    target = str(idl.get("target") or "mylib")
     effective_package = package_name or target.replace("-", "_")
     effective_lib = lib_name or target
 
