@@ -948,22 +948,23 @@ def normalize_generator_entries(
                     raise AbiFrameworkError(f"{context}.plugin must be a non-empty string when specified")
                 plugin_name = plugin_name_raw.strip()
 
-            if command_template is None and manifest_path is None:
-                raise AbiFrameworkError(
-                    f"{context} must configure at least one of: 'command' or 'manifest'"
-                )
+            # Auto-resolve SDK manifest when plugin name given but no manifest/command
             if manifest_path is None and plugin_name is not None:
-                # Try to auto-resolve via installed abi-forge SDK (pip install or submodule)
                 sdk_path = get_abi_forge_sdk_path()
                 if sdk_path is not None:
                     sdk_manifest = sdk_path / "plugin.manifest.json"
                     if sdk_manifest.is_file():
                         manifest_path = sdk_manifest
-                if manifest_path is None:
+
+            if command_template is None and manifest_path is None:
+                if plugin_name is not None:
                     raise AbiFrameworkError(
                         f"{context}.plugin requires {context}.manifest "
                         f"(or install abi-forge: pip install abi-forge)"
                     )
+                raise AbiFrameworkError(
+                    f"{context} must configure at least one of: 'command' or 'manifest'"
+                )
 
             if command_template is not None:
                 entry["command"] = command_template
