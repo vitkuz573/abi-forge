@@ -9,6 +9,8 @@
     <IsAotCompatible>false</IsAotCompatible>
     <EnableAotAnalyzer>false</EnableAotAnalyzer>
     <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
 
     <!-- NuGet package metadata -->
     <PackageId>Abi.RoslynGenerator</PackageId>
