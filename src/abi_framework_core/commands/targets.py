@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json as _json
+import sys
 
 from ..core import *  # noqa: F401,F403
 from .common import get_targets_map
@@ -18,6 +20,13 @@ def command_list_targets(args: argparse.Namespace) -> int:
 def command_init_target(args: argparse.Namespace) -> int:
     repo_root = Path(args.repo_root).resolve()
     config_path = Path(args.config).resolve()
+
+    # Derive sensible defaults from the target name when not provided
+    target_upper = args.target.upper().replace("-", "_")
+    target_lower = args.target.lower().replace("-", "_")
+    api_macro = getattr(args, "api_macro", None) or f"{target_upper}_API"
+    call_macro = getattr(args, "call_macro", None) or f"{target_upper}_CALL"
+    symbol_prefix = getattr(args, "symbol_prefix", None) or f"{target_lower}_"
 
     if config_path.exists():
         config = load_config(config_path)
@@ -44,9 +53,9 @@ def command_init_target(args: argparse.Namespace) -> int:
         "baseline_path": baseline_rel,
         "header": {
             "path": args.header_path,
-            "api_macro": args.api_macro,
-            "call_macro": args.call_macro,
-            "symbol_prefix": args.symbol_prefix,
+            "api_macro": api_macro,
+            "call_macro": call_macro,
+            "symbol_prefix": symbol_prefix,
             "parser": {
                 "backend": "clang_preprocess",
                 "compiler": "clang",
@@ -56,15 +65,15 @@ def command_init_target(args: argparse.Namespace) -> int:
                 "fallback_to_regex": True,
             },
             "version_macros": {
-                "major": args.version_major_macro,
-                "minor": args.version_minor_macro,
-                "patch": args.version_patch_macro,
+                "major": getattr(args, "version_major_macro", None) or f"{target_upper}_VERSION_MAJOR",
+                "minor": getattr(args, "version_minor_macro", None) or f"{target_upper}_VERSION_MINOR",
+                "patch": getattr(args, "version_patch_macro", None) or f"{target_upper}_VERSION_PATCH",
             },
             "types": {
                 "enable_enums": True,
                 "enable_structs": True,
-                "enum_name_pattern": f"^{re.escape(args.symbol_prefix)}",
-                "struct_name_pattern": f"^{re.escape(args.symbol_prefix)}",
+                "enum_name_pattern": f"^{re.escape(symbol_prefix)}",
+                "struct_name_pattern": f"^{re.escape(symbol_prefix)}",
                 "ignore_enums": [],
                 "ignore_structs": [],
                 "struct_tail_addition_is_breaking": True,
@@ -113,5 +122,69 @@ def command_init_target(args: argparse.Namespace) -> int:
 
     print(f"Target '{args.target}' initialized in {config_path}")
     return 0
+
+
+def _print_next_steps(out_path: Path) -> None:
+    print("")
+    print("Next steps:")
+    print(f"  1. Edit {out_path.name} and fill in TODO markers in callbacks[].fields[].assignment_lines")
+    print("  2. Run: abi_framework codegen --config abi/config.json --skip-binary")
+    print("  3. The Roslyn source generator produces all C# interop automatically from the IDL")
+    print("")
+    print("Tip: auto_abi_surface is enabled — ALL P/Invoke methods are generated for free.")
+    print("     Only callback lambda bodies and handle API members need manual implementation.")
+
+
+def command_scaffold_managed_api(args: argparse.Namespace) -> int:
+    """Scaffold a managed_api.source.json from an IDL JSON."""
+    generator_sdk = Path(__file__).resolve().parents[3] / "generator_sdk"
+    if str(generator_sdk) not in sys.path:
+        sys.path.insert(0, str(generator_sdk))
+
+    # Import the scaffold module
+    try:
+        import managed_api_scaffold_generator as scaffold_mod  # type: ignore[import]
+    except ImportError:
+        repo_root_attr = getattr(args, "repo_root", ".")
+        repo_root_p = Path(repo_root_attr).resolve()
+        sdk_path = repo_root_p / "tools" / "abi_framework" / "generator_sdk"
+        if str(sdk_path) not in sys.path:
+            sys.path.insert(0, str(sdk_path))
+        import managed_api_scaffold_generator as scaffold_mod  # type: ignore[import]
+
+    CORE_SRC = Path(__file__).resolve().parents[4] / "abi_codegen_core" / "src"
+    if str(CORE_SRC) not in sys.path:
+        sys.path.insert(0, str(CORE_SRC))
+
+    from abi_codegen_core.common import load_json_object, write_if_changed  # type: ignore[import]
+
+    idl_path = Path(args.idl).resolve()
+    out_path_raw = getattr(args, "out", None)
+    out_path: Path
+    if out_path_raw:
+        out_path = Path(out_path_raw).resolve()
+    else:
+        stem = idl_path.stem
+        for suf in (".idl",):
+            stem = stem.removesuffix(suf)
+        out_path = idl_path.parent.parent.parent / "bindings" / f"{stem}.managed_api.source.json"
+
+    force = getattr(args, "force", False)
+    check = getattr(args, "check", False)
+    dry_run = getattr(args, "dry_run", False)
+
+    if out_path.exists() and not force and not check and not dry_run:
+        print(f"scaffold-managed-api: output already exists at '{out_path}'. Use --force to overwrite.")
+        return 0
+
+    idl = load_json_object(idl_path)
+    result = scaffold_mod.scaffold(idl, args.namespace, getattr(args, "symbol_prefix", None))
+    content = _json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+
+    status = write_if_changed(out_path, content, check, dry_run)
+    if status == 0 and not check and not dry_run:
+        print(f"Scaffolded: {out_path}")
+        _print_next_steps(out_path)
+    return status
 
 

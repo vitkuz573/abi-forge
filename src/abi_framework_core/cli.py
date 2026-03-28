@@ -16,6 +16,7 @@ from .commands import (
     command_list_targets,
     command_regen_baselines,
     command_release_prepare,
+    command_scaffold_managed_api,
     command_snapshot,
     command_sync,
     command_validate_plugin_manifest,
@@ -284,18 +285,30 @@ def build_parser() -> argparse.ArgumentParser:
     init_target.add_argument("--config", required=True, help="Path to ABI config JSON.")
     init_target.add_argument("--target", required=True, help="Target name to initialize.")
     init_target.add_argument("--header-path", required=True, help="Header path relative to repo root.")
-    init_target.add_argument("--api-macro", default="LUMENRTC_API", help="Export macro used in ABI declarations.")
-    init_target.add_argument("--call-macro", default="LUMENRTC_CALL", help="Calling convention macro used in ABI declarations.")
-    init_target.add_argument("--symbol-prefix", default="lrtc_", help="ABI symbol prefix (for function export matching).")
-    init_target.add_argument("--version-major-macro", required=True, help="ABI major version macro name.")
-    init_target.add_argument("--version-minor-macro", required=True, help="ABI minor version macro name.")
-    init_target.add_argument("--version-patch-macro", required=True, help="ABI patch version macro name.")
+    init_target.add_argument("--api-macro", default="", help="Export macro (default: <TARGET>_API).")
+    init_target.add_argument("--call-macro", default="", help="Calling convention macro (default: <TARGET>_CALL).")
+    init_target.add_argument("--symbol-prefix", default="", help="Symbol prefix (default: <target>_).")
+    init_target.add_argument("--version-major-macro", default="", help="ABI major version macro (default: <TARGET>_VERSION_MAJOR).")
+    init_target.add_argument("--version-minor-macro", default="", help="ABI minor version macro (default: <TARGET>_VERSION_MINOR).")
+    init_target.add_argument("--version-patch-macro", default="", help="ABI patch version macro (default: <TARGET>_VERSION_PATCH).")
+    init_target.add_argument("--add-generators", choices=["none", "generic", "dotnet"], default="none", help="Pre-configure generator plugins in config.")
     init_target.add_argument("--binding-symbol", action="append", help="Optional symbol_contract symbol (repeatable).")
     init_target.add_argument("--binary-path", help="Optional native binary path.")
     init_target.add_argument("--baseline-path", help="Baseline path (default abi/baselines/<target>.json).")
     init_target.add_argument("--no-create-baseline", action="store_true", help="Do not create baseline immediately.")
     init_target.add_argument("--force", action="store_true", help="Overwrite target if already exists.")
     init_target.set_defaults(func=command_init_target)
+
+    scaffold_cmd = sub.add_parser("scaffold-managed-api", help="Scaffold a managed_api.source.json from IDL JSON.")
+    scaffold_cmd.add_argument("--repo-root", default=".", help="Repository root.")
+    scaffold_cmd.add_argument("--idl", required=True, help="IDL JSON path.")
+    scaffold_cmd.add_argument("--namespace", required=True, help="C# namespace for generated code.")
+    scaffold_cmd.add_argument("--out", help="Output path (default: derived from IDL path).")
+    scaffold_cmd.add_argument("--symbol-prefix", default=None, help="Symbol prefix override.")
+    scaffold_cmd.add_argument("--force", action="store_true", help="Overwrite existing file.")
+    scaffold_cmd.add_argument("--check", action="store_true", help="Fail if output would change.")
+    scaffold_cmd.add_argument("--dry-run", action="store_true", help="Do not write files.")
+    scaffold_cmd.set_defaults(func=command_scaffold_managed_api)
 
     return parser
 

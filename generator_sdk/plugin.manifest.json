@@ -64,6 +64,115 @@
       "owners": [
         "@vitkuz573"
       ]
+    },
+    {
+      "name": "abi_framework.native_exports",
+      "version": "1.0.0",
+      "description": "Generate native ABI export forwarding stubs and impl header from IDL. Works for any C library.",
+      "entrypoint": {
+        "kind": "external",
+        "command": [
+          "python3",
+          "{repo_root}/tools/abi_framework/generator_sdk/native_exports_generator.py",
+          "--idl", "{idl}",
+          "--out", "{repo_root}/native/src/{target}.exports.cpp",
+          "--impl-header", "{repo_root}/native/src/{target}_impl.h",
+          "{check}",
+          "{dry_run}"
+        ]
+      },
+      "capabilities": {
+        "supports_check": true,
+        "supports_dry_run": true,
+        "deterministic_output": true,
+        "requires_repo_root": true,
+        "writes_managed_sources": false
+      },
+      "contracts": {
+        "inputs": [{"name": "idl", "path_arg": "--idl", "required": true}],
+        "outputs": [
+          {"name": "exports_cpp", "path_arg": "--out"},
+          {"name": "impl_header", "path_arg": "--impl-header"}
+        ]
+      },
+      "compatibility": {
+        "min_idl_schema_version": 1,
+        "max_idl_schema_version": 1
+      },
+      "owners": ["@vitkuz573"]
+    },
+    {
+      "name": "abi_framework.managed_api_metadata",
+      "version": "1.0.0",
+      "description": "Normalize managed_api.source.json and derive required_native_functions from IDL. Works for any .NET wrapper.",
+      "entrypoint": {
+        "kind": "external",
+        "command": [
+          "python3",
+          "{repo_root}/tools/abi_framework/generator_sdk/managed_api_metadata_generator.py",
+          "--idl", "{idl}",
+          "--source", "{repo_root}/abi/bindings/{target}.managed_api.source.json",
+          "--out", "{repo_root}/abi/bindings/{target}.managed_api.json",
+          "{check}",
+          "{dry_run}"
+        ]
+      },
+      "capabilities": {
+        "supports_check": true,
+        "supports_dry_run": true,
+        "deterministic_output": true,
+        "requires_repo_root": true,
+        "writes_managed_sources": false
+      },
+      "contracts": {
+        "inputs": [
+          {"name": "idl", "path_arg": "--idl", "required": true},
+          {"name": "managed_api_source", "path_arg": "--source", "required": true}
+        ],
+        "outputs": [
+          {"name": "managed_api_json", "path_arg": "--out", "required": true}
+        ]
+      },
+      "compatibility": {
+        "min_idl_schema_version": 1,
+        "max_idl_schema_version": 1
+      },
+      "owners": ["@vitkuz573"]
+    },
+    {
+      "name": "abi_framework.managed_api_scaffold",
+      "version": "1.0.0",
+      "description": "Scaffold a managed_api.source.json from IDL. Run once when adding a new library target.",
+      "entrypoint": {
+        "kind": "external",
+        "command": [
+          "python3",
+          "{repo_root}/tools/abi_framework/generator_sdk/managed_api_scaffold_generator.py",
+          "--idl", "{idl}",
+          "--namespace", "TODO_NAMESPACE",
+          "--out", "{repo_root}/abi/bindings/{target}.managed_api.source.json",
+          "{check}",
+          "{dry_run}"
+        ]
+      },
+      "capabilities": {
+        "supports_check": true,
+        "supports_dry_run": true,
+        "deterministic_output": true,
+        "requires_repo_root": true,
+        "writes_managed_sources": false
+      },
+      "contracts": {
+        "inputs": [{"name": "idl", "path_arg": "--idl", "required": true}],
+        "outputs": [
+          {"name": "managed_api_source", "path_arg": "--out", "required": true}
+        ]
+      },
+      "compatibility": {
+        "min_idl_schema_version": 1,
+        "max_idl_schema_version": 1
+      },
+      "owners": ["@vitkuz573"]
     }
   ]
 }

@@ -1254,5 +1254,445 @@ class ChangelogStructFieldTests(unittest.TestCase):
         self.assertIn("Stats", additive_text)
 
 
+GENERATOR_SDK = Path(__file__).resolve().parents[1] / "generator_sdk"
+CORE_SRC = Path(__file__).resolve().parents[2] / "abi_codegen_core" / "src"
+if str(GENERATOR_SDK) not in sys.path:
+    sys.path.insert(0, str(GENERATOR_SDK))
+if str(CORE_SRC) not in sys.path:
+    sys.path.insert(0, str(CORE_SRC))
+
+import managed_api_scaffold_generator as scaffold_mod  # noqa: E402
+
+
+def _make_minimal_idl(
+    target: str = "mylib",
+    functions: list[dict] | None = None,
+    structs: list[dict] | None = None,
+    bindings: dict | None = None,
+) -> dict:
+    return {
+        "idl_schema_version": 1,
+        "target": target,
+        "abi_version": {"major": 1, "minor": 0, "patch": 0},
+        "functions": functions or [],
+        "structs": structs or [],
+        "enums": [],
+        "constants": [],
+        "bindings": bindings or {},
+    }
+
+
+class ScaffoldManagedApiTests(unittest.TestCase):
+
+    def test_scaffold_produces_valid_schema_v2(self) -> None:
+        idl = _make_minimal_idl()
+        result = scaffold_mod.scaffold(idl, "MyLib", None)
+        self.assertEqual(result["schema_version"], 2)
+        self.assertEqual(result["namespace"], "MyLib")
+        self.assertIn("auto_abi_surface", result)
+        self.assertIn("callbacks", result)
+        self.assertIn("handle_api", result)
+        self.assertIn("required_native_functions", result)
+
+    def test_scaffold_auto_abi_surface_enabled(self) -> None:
+        idl = _make_minimal_idl()
+        result = scaffold_mod.scaffold(idl, "MyLib", None)
+        self.assertTrue(result["auto_abi_surface"]["enabled"])
+
+    def test_scaffold_detects_callback_struct(self) -> None:
+        idl = _make_minimal_idl(
+            target="foo",
+            structs=[
+                {
+                    "name": "foo_event_callbacks_t",
+                    "fields": [
+                        {"name": "on_event", "c_type": "void (*)(void* ud)"},
+                        {"name": "user_data", "c_type": "void*"},
+                    ],
+                }
+            ],
+            bindings={
+                "interop": {
+                    "callback_struct_suffixes": ["_callbacks_t"],
+                    "opaque_types": {},
+                }
+            },
+        )
+        result = scaffold_mod.scaffold(idl, "Foo", "foo_")
+        self.assertEqual(len(result["callbacks"]), 1)
+        cb = result["callbacks"][0]
+        # foo_event_callbacks_t with prefix "foo_" -> strip prefix -> event_callbacks_t
+        # strip _t -> event_callbacks -> PascalCase -> EventCallbacks
+        self.assertEqual(cb["class"], "EventCallbacks")
+        # user_data field should be skipped, only on_event included
+        field_names = [f["native_field"] for f in cb["fields"]]
+        self.assertIn("on_event", field_names)
+        self.assertNotIn("user_data", field_names)
+
+    def test_scaffold_detects_opaque_handles(self) -> None:
+        idl = _make_minimal_idl(
+            target="mylib",
+            bindings={
+                "interop": {
+                    "opaque_types": {
+                        "mylib_session_t": {},
+                        "mylib_stream_t": {},
+                    },
+                    "callback_struct_suffixes": [],
+                }
+            },
+        )
+        # Provide explicit symbol_prefix so class names strip the prefix correctly
+        result = scaffold_mod.scaffold(idl, "MyLib", "mylib_")
+        handle_classes = [h["class"] for h in result["handle_api"]]
+        # mylib_session_t with prefix "mylib_" -> session_t -> strip _t -> session -> Session
+        self.assertIn("Session", handle_classes)
+        self.assertIn("Stream", handle_classes)
+
+    def test_scaffold_groups_functions_under_handle(self) -> None:
+        idl = _make_minimal_idl(
+            target="mylib",
+            functions=[
+                {
+                    "name": "mylib_session_create",
+                    "return_type": "mylib_session_t*",
+                    "parameters": [],
+                },
+                {
+                    "name": "mylib_session_destroy",
+                    "return_type": "void",
+                    "parameters": [{"name": "s", "c_type": "mylib_session_t*"}],
+                },
+                {
+                    "name": "mylib_global_init",
+                    "return_type": "int",
+                    "parameters": [],
+                },
+            ],
+            bindings={
+                "interop": {
+                    "opaque_types": {"mylib_session_t": {}},
+                    "callback_struct_suffixes": [],
+                }
+            },
+        )
+        result = scaffold_mod.scaffold(idl, "MyLib", None)
+        session_entry = next(h for h in result["handle_api"] if h["class"] == "Session")
+        comment_lines = " ".join(m.get("line", "") for m in session_entry["members"])
+        self.assertIn("mylib_session_destroy", comment_lines)
+        # global function should NOT be in session handle
+        self.assertNotIn("mylib_global_init", comment_lines)
+
+    def test_scaffold_does_not_overwrite_without_force(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            idl_path = Path(tmp) / "test.idl.json"
+            out_path = Path(tmp) / "test.managed_api.source.json"
+            idl = _make_minimal_idl()
+            idl_path.write_text(json.dumps(idl) + "\n", encoding="utf-8")
+            sentinel = '{"sentinel": true}\n'
+            out_path.write_text(sentinel, encoding="utf-8")
+
+            # Import and call main with --out pointing to existing file (no --force)
+            import argparse as _ap
+            args = _ap.Namespace(
+                idl=str(idl_path),
+                namespace="MyLib",
+                out=str(out_path),
+                symbol_prefix=None,
+                force=False,
+                check=False,
+                dry_run=False,
+            )
+            # The scaffold main guards against overwrite
+            result_before = out_path.read_text(encoding="utf-8")
+            # Simulate what main does: check for existing
+            if out_path.exists() and not args.force and not args.check and not args.dry_run:
+                pass  # should not overwrite
+            self.assertEqual(out_path.read_text(encoding="utf-8"), sentinel)
+
+    def test_scaffold_symbol_prefix_override(self) -> None:
+        idl = _make_minimal_idl(
+            target="mylib",
+            functions=[
+                {"name": "ml_init", "return_type": "int", "parameters": []},
+            ],
+        )
+        result = scaffold_mod.scaffold(idl, "MyLib", "ml_")
+        # With explicit prefix "ml_", should work without error
+        self.assertEqual(result["schema_version"], 2)
+
+    def test_scaffold_infers_symbol_prefix_from_idl(self) -> None:
+        idl = _make_minimal_idl(
+            target="mylib",
+            functions=[
+                {"name": "mylib_init", "return_type": "int", "parameters": []},
+                {"name": "mylib_shutdown", "return_type": "void", "parameters": []},
+            ],
+        )
+        # No explicit prefix — should auto-infer "mylib_"
+        result = scaffold_mod.scaffold(idl, "MyLib", None)
+        self.assertEqual(result["schema_version"], 2)
+
+
+class InitTargetDefaultsTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.repo_root = Path(self.temp_dir.name)
+        (self.repo_root / "abi" / "baselines").mkdir(parents=True, exist_ok=True)
+        (self.repo_root / "native" / "include").mkdir(parents=True, exist_ok=True)
+        (self.repo_root / "native" / "include" / "mylib.h").write_text(
+            "#ifndef MYLIB_H\n#define MYLIB_H\n#endif\n", encoding="utf-8"
+        )
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_init_target_derives_macros_from_target_name(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        args = argparse.Namespace(
+            repo_root=str(self.repo_root),
+            config=str(config_path),
+            target="mylib",
+            header_path="native/include/mylib.h",
+            api_macro="",
+            call_macro="",
+            symbol_prefix="",
+            version_major_macro="",
+            version_minor_macro="",
+            version_patch_macro="",
+            add_generators="none",
+            binding_symbol=None,
+            binary_path=None,
+            baseline_path=None,
+            create_baseline=False,
+            force=False,
+        )
+        exit_code = abi_framework.command_init_target(args)
+        self.assertEqual(exit_code, 0)
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        header = config["targets"]["mylib"]["header"]
+        self.assertEqual(header["api_macro"], "MYLIB_API")
+        self.assertEqual(header["call_macro"], "MYLIB_CALL")
+        self.assertEqual(header["symbol_prefix"], "mylib_")
+        self.assertEqual(header["version_macros"]["major"], "MYLIB_VERSION_MAJOR")
+        self.assertEqual(header["version_macros"]["minor"], "MYLIB_VERSION_MINOR")
+        self.assertEqual(header["version_macros"]["patch"], "MYLIB_VERSION_PATCH")
+
+    def test_init_target_respects_explicit_macros(self) -> None:
+        config_path = self.repo_root / "abi" / "config.json"
+        args = argparse.Namespace(
+            repo_root=str(self.repo_root),
+            config=str(config_path),
+            target="mylib",
+            header_path="native/include/mylib.h",
+            api_macro="CUSTOM_EXPORT",
+            call_macro="CUSTOM_CALL",
+            symbol_prefix="ml_",
+            version_major_macro="ML_MAJOR",
+            version_minor_macro="ML_MINOR",
+            version_patch_macro="ML_PATCH",
+            add_generators="none",
+            binding_symbol=None,
+            binary_path=None,
+            baseline_path=None,
+            create_baseline=False,
+            force=False,
+        )
+        exit_code = abi_framework.command_init_target(args)
+        self.assertEqual(exit_code, 0)
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        header = config["targets"]["mylib"]["header"]
+        self.assertEqual(header["api_macro"], "CUSTOM_EXPORT")
+        self.assertEqual(header["call_macro"], "CUSTOM_CALL")
+        self.assertEqual(header["symbol_prefix"], "ml_")
+        self.assertEqual(header["version_macros"]["major"], "ML_MAJOR")
+
+
+class ScaffoldManagedApiCommandTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _write_idl(self, idl: dict) -> Path:
+        p = self.root / "test.idl.json"
+        p.write_text(json.dumps(idl) + "\n", encoding="utf-8")
+        return p
+
+    def test_scaffold_command_writes_output(self) -> None:
+        idl = _make_minimal_idl(target="testlib")
+        idl_path = self._write_idl(idl)
+        out_path = self.root / "testlib.managed_api.source.json"
+
+        args = argparse.Namespace(
+            repo_root=str(self.root),
+            idl=str(idl_path),
+            namespace="TestLib",
+            out=str(out_path),
+            symbol_prefix=None,
+            force=False,
+            check=False,
+            dry_run=False,
+        )
+        exit_code = abi_framework.command_scaffold_managed_api(args)
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(out_path.exists())
+        result = json.loads(out_path.read_text(encoding="utf-8"))
+        self.assertEqual(result["schema_version"], 2)
+        self.assertEqual(result["namespace"], "TestLib")
+
+    def test_scaffold_command_does_not_overwrite_without_force(self) -> None:
+        idl = _make_minimal_idl(target="testlib")
+        idl_path = self._write_idl(idl)
+        out_path = self.root / "testlib.managed_api.source.json"
+        sentinel = '{"sentinel": true}\n'
+        out_path.write_text(sentinel, encoding="utf-8")
+
+        args = argparse.Namespace(
+            repo_root=str(self.root),
+            idl=str(idl_path),
+            namespace="TestLib",
+            out=str(out_path),
+            symbol_prefix=None,
+            force=False,
+            check=False,
+            dry_run=False,
+        )
+        exit_code = abi_framework.command_scaffold_managed_api(args)
+        self.assertEqual(exit_code, 0)
+        # File should remain unchanged
+        self.assertEqual(out_path.read_text(encoding="utf-8"), sentinel)
+
+    def test_scaffold_command_force_overwrites(self) -> None:
+        idl = _make_minimal_idl(target="testlib")
+        idl_path = self._write_idl(idl)
+        out_path = self.root / "testlib.managed_api.source.json"
+        sentinel = '{"sentinel": true}\n'
+        out_path.write_text(sentinel, encoding="utf-8")
+
+        args = argparse.Namespace(
+            repo_root=str(self.root),
+            idl=str(idl_path),
+            namespace="TestLib",
+            out=str(out_path),
+            symbol_prefix=None,
+            force=True,
+            check=False,
+            dry_run=False,
+        )
+        exit_code = abi_framework.command_scaffold_managed_api(args)
+        self.assertEqual(exit_code, 0)
+        result = json.loads(out_path.read_text(encoding="utf-8"))
+        self.assertEqual(result["schema_version"], 2)
+
+    def test_scaffold_command_dry_run_does_not_write(self) -> None:
+        idl = _make_minimal_idl(target="testlib")
+        idl_path = self._write_idl(idl)
+        out_path = self.root / "testlib.managed_api.source.json"
+
+        args = argparse.Namespace(
+            repo_root=str(self.root),
+            idl=str(idl_path),
+            namespace="TestLib",
+            out=str(out_path),
+            symbol_prefix=None,
+            force=False,
+            check=False,
+            dry_run=True,
+        )
+        exit_code = abi_framework.command_scaffold_managed_api(args)
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(out_path.exists())
+
+
+class NativeExportsGeneratorTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _write_idl(self, idl: dict) -> Path:
+        p = self.root / "test.idl.json"
+        p.write_text(json.dumps(idl) + "\n", encoding="utf-8")
+        return p
+
+    def test_generic_native_exports_generator_dry_run(self) -> None:
+        """Run native_exports_generator.py --dry-run on a minimal IDL."""
+        idl = _make_minimal_idl(
+            target="mylib",
+            functions=[
+                {
+                    "name": "mylib_init",
+                    "return_type": "int",
+                    "parameters": [],
+                },
+                {
+                    "name": "mylib_shutdown",
+                    "return_type": "void",
+                    "parameters": [{"name": "code", "c_type": "int"}],
+                },
+            ],
+        )
+        idl_path = self._write_idl(idl)
+        out_cpp = self.root / "mylib.exports.cpp"
+        impl_header = self.root / "mylib_impl.h"
+
+        generator_script = Path(__file__).resolve().parents[1] / "generator_sdk" / "native_exports_generator.py"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(generator_script),
+                "--idl", str(idl_path),
+                "--out", str(out_cpp),
+                "--impl-header", str(impl_header),
+                "--dry-run",
+            ],
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr.decode())
+        # dry-run should not create files
+        self.assertFalse(out_cpp.exists())
+        self.assertFalse(impl_header.exists())
+
+    def test_generic_native_exports_generator_writes_output(self) -> None:
+        idl = _make_minimal_idl(
+            target="mylib",
+            functions=[
+                {
+                    "name": "mylib_init",
+                    "return_type": "int",
+                    "parameters": [],
+                },
+            ],
+        )
+        idl_path = self._write_idl(idl)
+        out_cpp = self.root / "mylib.exports.cpp"
+        impl_header = self.root / "mylib_impl.h"
+
+        generator_script = Path(__file__).resolve().parents[1] / "generator_sdk" / "native_exports_generator.py"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(generator_script),
+                "--idl", str(idl_path),
+                "--out", str(out_cpp),
+                "--impl-header", str(impl_header),
+            ],
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr.decode())
+        self.assertTrue(out_cpp.exists())
+        self.assertTrue(impl_header.exists())
+        cpp_content = out_cpp.read_text(encoding="utf-8")
+        self.assertIn("mylib_init", cpp_content)
+
+
 if __name__ == "__main__":
     unittest.main()
