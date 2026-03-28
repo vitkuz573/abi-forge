@@ -1080,12 +1080,14 @@ def run_generator_entry(
             target_name=target_name,
             generator=generator,
         )
+        _sdk_path = get_abi_forge_sdk_path()
         replacements = {
             "{repo_root}": str(repo_root),
             "{target}": target_name,
             "{idl}": str(idl_path),
             "{check}": "--check" if check else "",
             "{dry_run}": "--dry-run" if dry_run else "",
+            "{abi_forge_sdk}": str(_sdk_path) if _sdk_path is not None else "",
         }
         rendered: list[str] = []
         for token in command_template:
