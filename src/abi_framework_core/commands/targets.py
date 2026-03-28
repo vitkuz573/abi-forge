@@ -323,3 +323,69 @@ def command_generate_rust_ffi(args: argparse.Namespace) -> int:
     return status
 
 
+def command_generate_baseline(args: argparse.Namespace) -> int:
+    """Copy current IDL snapshot to baseline path (updates the baseline)."""
+    import shutil
+
+    repo_root = Path(getattr(args, "repo_root", ".")).resolve()
+    config_path = Path(args.config).resolve()
+    force = getattr(args, "force", False)
+
+    config = load_config(config_path)
+    targets_map = config.get("targets")
+    if not isinstance(targets_map, dict) or not targets_map:
+        raise AbiFrameworkError("Config must define non-empty 'targets' object.")
+
+    target_name_arg = getattr(args, "target", None)
+    if target_name_arg:
+        target_names = [target_name_arg]
+    else:
+        target_names = sorted(targets_map.keys())
+
+    exit_code = 0
+
+    for target_name in target_names:
+        target = targets_map.get(target_name)
+        if not isinstance(target, dict):
+            print(f"[{target_name}] generate-baseline: target not found in config.", file=sys.stderr)
+            exit_code = 1
+            continue
+
+        # Locate the current IDL JSON
+        codegen_cfg_raw = target.get("codegen") or {}
+        idl_output_value = codegen_cfg_raw.get("idl_output_path")
+        if isinstance(idl_output_value, str) and idl_output_value:
+            idl_path = ensure_relative_path(repo_root, idl_output_value).resolve()
+        else:
+            idl_path = ensure_relative_path(repo_root, f"abi/generated/{target_name}/{target_name}.idl.json").resolve()
+
+        if not idl_path.exists():
+            print(
+                f"[{target_name}] generate-baseline: IDL not found at {idl_path}. "
+                "Run 'abi_framework generate' first.",
+                file=sys.stderr,
+            )
+            exit_code = 1
+            continue
+
+        # Locate baseline path
+        baseline_rel = target.get("baseline_path")
+        if not isinstance(baseline_rel, str) or not baseline_rel:
+            baseline_rel = f"abi/baselines/{target_name}.idl.json"
+
+        baseline_path = ensure_relative_path(repo_root, baseline_rel).resolve()
+
+        if baseline_path.exists() and not force:
+            print(
+                f"[{target_name}] generate-baseline: baseline already exists at {baseline_path}. "
+                "Use --force to overwrite."
+            )
+            continue
+
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(idl_path), str(baseline_path))
+        print(f"[{target_name}] generate-baseline: baseline written to {baseline_path}")
+
+    return exit_code
+
+

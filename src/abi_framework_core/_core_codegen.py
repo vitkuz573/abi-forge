@@ -3,6 +3,7 @@ from __future__ import annotations
 from ._core_base import *  # noqa: F401,F403
 from ._core_compare import version_dict_to_str
 from ._core_plugins import (
+    discover_plugin_manifests,
     find_manifest_plugins_by_command,
     get_manifest_plugin_by_name,
     get_manifest_plugin_entrypoint_command,
@@ -864,6 +865,29 @@ def render_native_export_map_from_idl(idl_payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _auto_discover_generator_entries(
+    *,
+    repo_root: Path,
+    target_name: str,
+) -> list[dict[str, Any]]:
+    """Auto-discover plugin manifests from standard locations when no explicit generators are configured."""
+    search_patterns: list[Path] = [
+        Path(str(repo_root / "tools" / "*" / "plugin.manifest.json")),
+        repo_root / "tools" / "abi_framework" / "generator_sdk" / "plugin.manifest.json",
+    ]
+    discovered = discover_plugin_manifests(search_patterns)
+    entries: list[dict[str, Any]] = []
+    for manifest_path in discovered:
+        entries.append({
+            "name": f"auto_discovered_{manifest_path.parent.name}",
+            "kind": "external",
+            "enabled": True,
+            "options": {},
+            "manifest_path": manifest_path.resolve(),
+        })
+    return entries
+
+
 def normalize_generator_entries(
     *,
     repo_root: Path,
@@ -876,7 +900,8 @@ def normalize_generator_entries(
 
     generators_raw = bindings_cfg.get("generators")
     if generators_raw is None:
-        return []
+        # Fall back to auto-discovery from common locations
+        return _auto_discover_generator_entries(repo_root=repo_root, target_name=target_name)
 
     if not isinstance(generators_raw, list):
         raise AbiFrameworkError(f"target '{target_name}'.bindings.generators must be an array when specified")

@@ -13,6 +13,7 @@ from .commands import (
     command_diff,
     command_doctor,
     command_generate,
+    command_generate_baseline,
     command_generate_python_bindings,
     command_generate_rust_ffi,
     command_init_target,
@@ -161,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--print-diff", action="store_true", help="Print unified diff for changed artifacts.")
     generate.add_argument("--report-json", help="Write aggregate generation report JSON.")
     generate.add_argument("--fail-on-sync", action="store_true", help="Fail if generated ABI symbols drift from configured bindings symbol contract.")
+    generate.add_argument("--force-regen", action="store_true", help="Bypass IDL cache and force re-parsing the header.")
     generate.set_defaults(func=command_generate)
 
     codegen = sub.add_parser("codegen", help="Run ABI IDL generation and configured language generators.")
@@ -179,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     codegen.add_argument("--print-diff", action="store_true", help="Print unified diff for changed artifacts.")
     codegen.add_argument("--report-json", help="Write aggregate codegen report JSON.")
     codegen.add_argument("--fail-on-sync", action="store_true", help="Fail if generated ABI symbols drift from configured bindings symbol contract.")
+    codegen.add_argument("--force-regen", action="store_true", help="Bypass IDL cache and force re-parsing the header.")
     codegen.set_defaults(func=command_codegen)
 
     sync = sub.add_parser("sync", help="Sync generated ABI artifacts and optionally baselines.")
@@ -374,6 +377,17 @@ def build_parser() -> argparse.ArgumentParser:
     gen_rust.add_argument("--check", action="store_true")
     gen_rust.add_argument("--dry-run", action="store_true")
     gen_rust.set_defaults(func=command_generate_rust_ffi)
+
+    # generate-baseline command
+    gen_baseline = sub.add_parser(
+        "generate-baseline",
+        help="Copy current IDL snapshot to baseline path (updates the baseline).",
+    )
+    gen_baseline.add_argument("--repo-root", default=".", help="Repository root for relative path resolution.")
+    gen_baseline.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    gen_baseline.add_argument("--target", default=None, help="Target name (optional; all targets if omitted).")
+    gen_baseline.add_argument("--force", action="store_true", help="Overwrite existing baseline.")
+    gen_baseline.set_defaults(func=command_generate_baseline)
 
     return parser
 

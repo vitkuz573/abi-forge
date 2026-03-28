@@ -2167,5 +2167,453 @@ class MultiLanguageCodegenTests(unittest.TestCase):
         self.assertIn("(DataChannelState)", all_lines)
 
 
+class TypeScriptBindingsTests(unittest.TestCase):
+    """Tests for TypeScript ffi-napi binding generator."""
+
+    def setUp(self) -> None:
+        sdk_path = Path(__file__).resolve().parents[1] / "generator_sdk"
+        if str(sdk_path) not in sys.path:
+            sys.path.insert(0, str(sdk_path))
+        import typescript_bindings_generator as ts_gen
+        self.ts_gen = ts_gen
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _make_minimal_idl(
+        self,
+        target: str = "foo",
+        symbol_prefix: str = "foo_",
+        opaque_types: dict | None = None,
+        structs: dict | None = None,
+        cb_typedefs: list | None = None,
+        enums: dict | None = None,
+        functions: list | None = None,
+    ) -> dict:
+        return {
+            "target": target,
+            "codegen": {"symbol_prefix": symbol_prefix},
+            "functions": functions or [],
+            "header_types": {
+                "structs": structs or {},
+                "callback_typedefs": cb_typedefs or [],
+                "enums": enums or {},
+                "opaque_types": [],
+                "opaque_type_declarations": [],
+                "constants": {},
+            },
+            "bindings": {
+                "interop": {
+                    "opaque_types": opaque_types or {},
+                    "callback_struct_suffixes": ["_callbacks_t"],
+                }
+            },
+        }
+
+    def test_typescript_enums_generated(self) -> None:
+        """IDL enum produces TypeScript enum with correct values."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            enums={
+                "foo_data_channel_state": {
+                    "members": [
+                        {"name": "FOO_DATA_CHANNEL_STATE_CONNECTING", "value": 0},
+                        {"name": "FOO_DATA_CHANNEL_STATE_OPEN", "value": 1},
+                        {"name": "FOO_DATA_CHANNEL_STATE_CLOSING", "value": 2},
+                        {"name": "FOO_DATA_CHANNEL_STATE_CLOSED", "value": 3},
+                    ]
+                }
+            },
+        )
+        content = self.ts_gen.generate_typescript_bindings(idl)
+        self.assertIn("export enum DataChannelState {", content)
+        self.assertIn("Connecting = 0,", content)
+        self.assertIn("Open = 1,", content)
+        self.assertIn("Closing = 2,", content)
+        self.assertIn("Closed = 3,", content)
+
+    def test_typescript_opaque_handles_generated(self) -> None:
+        """IDL opaque_type produces TypeScript Handle type and ref type constant."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            opaque_types={
+                "foo_session_t": {"release": "foo_session_release"}
+            },
+        )
+        content = self.ts_gen.generate_typescript_bindings(idl)
+        self.assertIn("export type SessionHandle = ref.Pointer<unknown>;", content)
+        self.assertIn("export const SessionHandleType = ref.refType(ref.types.void);", content)
+
+    def test_typescript_library_declaration_generated(self) -> None:
+        """loadLibrary() function is generated containing all function signatures."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            functions=[
+                {
+                    "name": "foo_add",
+                    "c_return_type": "int32_t",
+                    "parameters": [
+                        {"c_type": "int32_t", "name": "a"},
+                        {"c_type": "int32_t", "name": "b"},
+                    ],
+                },
+                {
+                    "name": "foo_version",
+                    "c_return_type": "uint32_t",
+                    "parameters": [],
+                },
+            ],
+        )
+        content = self.ts_gen.generate_typescript_bindings(idl)
+        self.assertIn("export function loadLibrary(libraryPath: string)", content)
+        self.assertIn("ffi.Library(libraryPath", content)
+        self.assertIn("'foo_add':", content)
+        self.assertIn("'foo_version':", content)
+        self.assertIn("'int32'", content)
+
+    def test_typescript_oop_wrappers_generated(self) -> None:
+        """OOP class wrappers are generated for opaque handle types with dispose method."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            opaque_types={
+                "foo_session_t": {"release": "foo_session_release"}
+            },
+            functions=[
+                {
+                    "name": "foo_session_create",
+                    "c_return_type": "foo_session_t*",
+                    "parameters": [],
+                },
+                {
+                    "name": "foo_session_release",
+                    "c_return_type": "void",
+                    "parameters": [{"c_type": "foo_session_t*", "name": "session"}],
+                },
+                {
+                    "name": "foo_session_get_id",
+                    "c_return_type": "uint32_t",
+                    "parameters": [{"c_type": "foo_session_t*", "name": "session"}],
+                },
+            ],
+        )
+        content = self.ts_gen.generate_typescript_bindings(idl)
+        self.assertIn("export class Session {", content)
+        self.assertIn("dispose(): void {", content)
+        self.assertIn("[Symbol.dispose](): void {", content)
+        self.assertIn("getId(", content)
+
+    def test_typescript_no_invalid_tokens(self) -> None:
+        """Generated TypeScript output must not contain Python None or null tokens."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            opaque_types={
+                "foo_session_t": {"release": "foo_session_release"}
+            },
+            functions=[
+                {
+                    "name": "foo_session_create",
+                    "c_return_type": "foo_session_t*",
+                    "parameters": [],
+                },
+                {
+                    "name": "foo_session_release",
+                    "c_return_type": "void",
+                    "parameters": [{"c_type": "foo_session_t*", "name": "session"}],
+                },
+            ],
+        )
+        content = self.ts_gen.generate_typescript_bindings(idl)
+        self.assertNotIn("None", content)
+        # 'null' is valid in TS but we shouldn't have Python-generated nulls as type names
+        for line in content.splitlines():
+            stripped = line.strip()
+            # 'null' should not appear as a type string in ffi Library declarations
+            self.assertNotIn("'null'", stripped)
+
+    def test_typescript_valid_syntax_structure(self) -> None:
+        """Generated output starts with the auto-generated header comment."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            functions=[
+                {"name": "foo_init", "c_return_type": "void", "parameters": []}
+            ],
+        )
+        content = self.ts_gen.generate_typescript_bindings(idl)
+        self.assertTrue(content.startswith("// <auto-generated />"), msg=f"Content starts with: {content[:100]!r}")
+        self.assertIn("import * as ffi from 'ffi-napi';", content)
+        self.assertIn("import * as ref from 'ref-napi';", content)
+
+
+class GoBindingsTests(unittest.TestCase):
+    """Tests for Go cgo binding generator."""
+
+    def setUp(self) -> None:
+        sdk_path = Path(__file__).resolve().parents[1] / "generator_sdk"
+        if str(sdk_path) not in sys.path:
+            sys.path.insert(0, str(sdk_path))
+        import go_bindings_generator as go_gen
+        self.go_gen = go_gen
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _make_minimal_idl(
+        self,
+        target: str = "foo",
+        symbol_prefix: str = "foo_",
+        opaque_types: dict | None = None,
+        enums: dict | None = None,
+        functions: list | None = None,
+    ) -> dict:
+        return {
+            "target": target,
+            "codegen": {"symbol_prefix": symbol_prefix},
+            "functions": functions or [],
+            "header_types": {
+                "structs": {},
+                "callback_typedefs": [],
+                "enums": enums or {},
+                "opaque_types": [],
+                "opaque_type_declarations": [],
+                "constants": {},
+            },
+            "bindings": {
+                "interop": {
+                    "opaque_types": opaque_types or {},
+                    "callback_struct_suffixes": ["_callbacks_t"],
+                }
+            },
+        }
+
+    def test_go_enums_generated(self) -> None:
+        """IDL enum produces Go type and const block."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            enums={
+                "foo_state": {
+                    "members": [
+                        {"name": "FOO_STATE_IDLE", "value": 0},
+                        {"name": "FOO_STATE_RUNNING", "value": 1},
+                    ]
+                }
+            },
+        )
+        content = self.go_gen.generate_go_bindings(idl)
+        self.assertIn("type State int32", content)
+        self.assertIn("const (", content)
+        self.assertIn("StateIdle State = 0", content)
+        self.assertIn("StateRunning State = 1", content)
+
+    def test_go_opaque_handles_generated(self) -> None:
+        """IDL opaque_type produces Go struct wrapper."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            opaque_types={
+                "foo_session_t": {"release": "foo_session_release"}
+            },
+        )
+        content = self.go_gen.generate_go_bindings(idl)
+        self.assertIn("type Session struct {", content)
+        self.assertIn("ptr *C.foo_session_t", content)
+
+    def test_go_constructor_generated(self) -> None:
+        """IDL create function produces Go NewXxx constructor."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            opaque_types={
+                "foo_session_t": {"release": "foo_session_release"}
+            },
+            functions=[
+                {
+                    "name": "foo_session_create",
+                    "c_return_type": "foo_session_t*",
+                    "parameters": [],
+                },
+                {
+                    "name": "foo_session_release",
+                    "c_return_type": "void",
+                    "parameters": [{"c_type": "foo_session_t*", "name": "session"}],
+                },
+            ],
+        )
+        content = self.go_gen.generate_go_bindings(idl)
+        self.assertIn("func NewSession(", content)
+        self.assertIn("C.foo_session_create(", content)
+        self.assertIn("runtime.SetFinalizer(", content)
+
+    def test_go_close_method_generated(self) -> None:
+        """IDL release function becomes Close() method on wrapper struct."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            opaque_types={
+                "foo_session_t": {"release": "foo_session_release"}
+            },
+            functions=[
+                {
+                    "name": "foo_session_create",
+                    "c_return_type": "foo_session_t*",
+                    "parameters": [],
+                },
+                {
+                    "name": "foo_session_release",
+                    "c_return_type": "void",
+                    "parameters": [{"c_type": "foo_session_t*", "name": "session"}],
+                },
+            ],
+        )
+        content = self.go_gen.generate_go_bindings(idl)
+        self.assertIn("func (h *Session) Close()", content)
+        self.assertIn("C.foo_session_release(h.ptr)", content)
+
+    def test_go_no_invalid_tokens(self) -> None:
+        """Generated Go output must not contain Python None or null tokens."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+            opaque_types={
+                "foo_session_t": {"release": "foo_session_release"}
+            },
+            functions=[
+                {
+                    "name": "foo_session_create",
+                    "c_return_type": "foo_session_t*",
+                    "parameters": [],
+                },
+                {
+                    "name": "foo_session_release",
+                    "c_return_type": "void",
+                    "parameters": [{"c_type": "foo_session_t*", "name": "session"}],
+                },
+            ],
+        )
+        content = self.go_gen.generate_go_bindings(idl)
+        self.assertNotIn("None", content)
+        self.assertNotIn("null", content)
+
+    def test_go_package_declaration(self) -> None:
+        """Generated Go output starts with the correct package declaration."""
+        idl = self._make_minimal_idl(
+            symbol_prefix="foo_",
+        )
+        content = self.go_gen.generate_go_bindings(idl, package_name="mypackage")
+        self.assertIn("package mypackage", content)
+        self.assertIn("// Code generated by", content)
+        self.assertIn("DO NOT EDIT.", content)
+
+
+class GenerateBaselineTests(unittest.TestCase):
+    """Tests for the generate-baseline command."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.repo_root = Path(self.temp_dir.name)
+        self._create_demo_repo()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _create_demo_repo(self) -> None:
+        (self.repo_root / "native" / "include").mkdir(parents=True, exist_ok=True)
+        (self.repo_root / "abi" / "baselines").mkdir(parents=True, exist_ok=True)
+        (self.repo_root / "abi" / "generated" / "demo").mkdir(parents=True, exist_ok=True)
+
+        header = """#ifndef DEMO_H
+#define DEMO_H
+#include <stdint.h>
+#define MY_ABI_VERSION_MAJOR 1
+#define MY_ABI_VERSION_MINOR 0
+#define MY_ABI_VERSION_PATCH 0
+#define MY_API
+#define MY_CALL
+MY_API int MY_CALL my_init(void);
+#endif
+"""
+        config = {
+            "targets": {
+                "demo": {
+                    "baseline_path": "abi/baselines/demo.json",
+                    "header": {
+                        "path": "native/include/demo.h",
+                        "api_macro": "MY_API",
+                        "call_macro": "MY_CALL",
+                        "symbol_prefix": "my_",
+                        "version_macros": {
+                            "major": "MY_ABI_VERSION_MAJOR",
+                            "minor": "MY_ABI_VERSION_MINOR",
+                            "patch": "MY_ABI_VERSION_PATCH",
+                        },
+                    },
+                    "codegen": {
+                        "enabled": True,
+                        "idl_output_path": "abi/generated/demo/demo.idl.json",
+                    },
+                }
+            }
+        }
+
+        (self.repo_root / "native" / "include" / "demo.h").write_text(header, encoding="utf-8")
+        import abi_framework_core as abi_framework
+        abi_framework.write_json(self.repo_root / "abi" / "config.json", config)
+
+        # Create a fake IDL file in the expected location
+        fake_idl = {"target": "demo", "functions": [], "header_types": {}}
+        import json
+        idl_path = self.repo_root / "abi" / "generated" / "demo" / "demo.idl.json"
+        idl_path.write_text(json.dumps(fake_idl, indent=2) + "\n", encoding="utf-8")
+
+    def test_generate_baseline_creates_file(self) -> None:
+        """generate-baseline copies IDL to baseline path."""
+        import abi_framework_core as abi_framework
+        baseline_path = self.repo_root / "abi" / "baselines" / "demo.json"
+        self.assertFalse(baseline_path.exists())
+
+        exit_code = abi_framework.command_generate_baseline(
+            argparse.Namespace(
+                repo_root=str(self.repo_root),
+                config=str(self.repo_root / "abi" / "config.json"),
+                target="demo",
+                force=True,
+            )
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(baseline_path.exists())
+
+    def test_generate_baseline_no_force_warns(self) -> None:
+        """generate-baseline without --force does not overwrite existing baseline."""
+        import abi_framework_core as abi_framework
+        baseline_path = self.repo_root / "abi" / "baselines" / "demo.json"
+        baseline_path.write_text("original", encoding="utf-8")
+
+        exit_code = abi_framework.command_generate_baseline(
+            argparse.Namespace(
+                repo_root=str(self.repo_root),
+                config=str(self.repo_root / "abi" / "config.json"),
+                target="demo",
+                force=False,
+            )
+        )
+        # Should succeed but not overwrite
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(baseline_path.read_text(encoding="utf-8"), "original")
+
+    def test_generate_baseline_missing_idl_fails(self) -> None:
+        """generate-baseline fails gracefully when IDL does not exist."""
+        import abi_framework_core as abi_framework
+        # Remove the IDL file
+        idl_path = self.repo_root / "abi" / "generated" / "demo" / "demo.idl.json"
+        idl_path.unlink()
+
+        exit_code = abi_framework.command_generate_baseline(
+            argparse.Namespace(
+                repo_root=str(self.repo_root),
+                config=str(self.repo_root / "abi" / "config.json"),
+                target="demo",
+                force=True,
+            )
+        )
+        self.assertNotEqual(exit_code, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

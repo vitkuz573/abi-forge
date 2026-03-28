@@ -419,3 +419,41 @@ def load_and_validate_plugin_manifest(manifest_path: Path) -> tuple[dict[str, An
             f"manifest '{manifest_path}' validation failed: " + "; ".join(str(item) for item in errors)
         )
     return payload, report
+
+
+def discover_plugin_manifests(search_dirs: list[Path]) -> list[Path]:
+    """Scan directories for plugin.manifest.json files.
+
+    Each entry in search_dirs may contain glob patterns (resolved against that path's parent).
+    Direct paths and glob patterns like '{repo_root}/tools/*/plugin.manifest.json' are supported.
+    """
+    found: list[Path] = []
+    seen: set[Path] = set()
+
+    for search_dir in search_dirs:
+        # search_dir may be a glob pattern string stored as a Path
+        search_str = str(search_dir)
+        if "*" in search_str or "?" in search_str:
+            import glob as _glob
+            matched = sorted(_glob.glob(search_str))
+            for m in matched:
+                p = Path(m).resolve()
+                if p not in seen and p.exists() and p.is_file():
+                    seen.add(p)
+                    found.append(p)
+        else:
+            # Treat as directory — look for plugin.manifest.json inside it
+            dir_path = Path(search_str)
+            candidate = dir_path / "plugin.manifest.json"
+            p = candidate.resolve()
+            if p not in seen and p.exists() and p.is_file():
+                seen.add(p)
+                found.append(p)
+            # Also check if search_dir itself is a manifest file
+            if dir_path.is_file() and dir_path.name == "plugin.manifest.json":
+                p2 = dir_path.resolve()
+                if p2 not in seen:
+                    seen.add(p2)
+                    found.append(p2)
+
+    return found

@@ -30,6 +30,7 @@ def command_generate(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             check=args.check,
             print_diff=args.print_diff,
+            force_regen=bool(getattr(args, "force_regen", False)),
         )
         aggregate["results"][target_name] = {
             "artifacts": result["artifacts"],
@@ -87,6 +88,7 @@ def command_codegen(args: argparse.Namespace) -> int:
             dry_run=bool(args.dry_run),
             check=bool(args.check),
             print_diff=bool(args.print_diff),
+            force_regen=bool(getattr(args, "force_regen", False)),
         )
 
         idl_path = generated.get("idl_output_path_abs")

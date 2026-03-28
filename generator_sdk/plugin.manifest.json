@@ -270,6 +270,70 @@
         "max_idl_schema_version": 1
       },
       "owners": ["@vitkuz573"]
+    },
+    {
+      "name": "abi_framework.typescript_bindings",
+      "version": "1.0.0",
+      "description": "Generate TypeScript/Node.js ffi-napi bindings from IDL. Works for any C library.",
+      "entrypoint": {
+        "kind": "external",
+        "command": [
+          "python3",
+          "{repo_root}/tools/abi_framework/generator_sdk/typescript_bindings_generator.py",
+          "--idl", "{idl}",
+          "--out", "{repo_root}/abi/generated/{target}/{target}_ffi.ts",
+          "{check}",
+          "{dry_run}"
+        ]
+      },
+      "capabilities": {
+        "supports_check": true,
+        "supports_dry_run": true,
+        "deterministic_output": true,
+        "requires_repo_root": true,
+        "writes_managed_sources": false
+      },
+      "contracts": {
+        "inputs": [{"name": "idl", "path_arg": "--idl", "required": true}],
+        "outputs": [{"name": "typescript_bindings", "path_arg": "--out", "required": true}]
+      },
+      "compatibility": {
+        "min_idl_schema_version": 1,
+        "max_idl_schema_version": 1
+      },
+      "owners": ["@vitkuz573"]
+    },
+    {
+      "name": "abi_framework.go_bindings",
+      "version": "1.0.0",
+      "description": "Generate Go cgo bindings from IDL. Works for any C library.",
+      "entrypoint": {
+        "kind": "external",
+        "command": [
+          "python3",
+          "{repo_root}/tools/abi_framework/generator_sdk/go_bindings_generator.py",
+          "--idl", "{idl}",
+          "--out", "{repo_root}/abi/generated/{target}/{target}_ffi.go",
+          "{check}",
+          "{dry_run}"
+        ]
+      },
+      "capabilities": {
+        "supports_check": true,
+        "supports_dry_run": true,
+        "deterministic_output": true,
+        "requires_repo_root": true,
+        "writes_managed_sources": false
+      },
+      "contracts": {
+        "inputs": [{"name": "idl", "path_arg": "--idl", "required": true}],
+        "outputs": [{"name": "go_bindings", "path_arg": "--out", "required": true}]
+      },
+      "compatibility": {
+        "min_idl_schema_version": 1,
+        "max_idl_schema_version": 1
+      },
+      "owners": ["@vitkuz573"]
     }
   ]
 }

@@ -54,6 +54,57 @@ def resolve_target_names(config: dict[str, Any], target_name: str | None) -> lis
     return sorted(targets.keys())
 
 
+def _compute_header_sha256(header_path: Path) -> str:
+    """Compute SHA256 of a header file."""
+    try:
+        data = header_path.read_bytes()
+        return hashlib.sha256(data).hexdigest()
+    except OSError:
+        return ""
+
+
+def _compute_config_hash(target: dict[str, Any]) -> str:
+    """Compute a stable hash of config sections that affect IDL generation."""
+    header_cfg = target.get("header") or {}
+    codegen_cfg_raw = target.get("codegen") or {}
+    bindings_cfg = target.get("bindings") or {}
+    relevant = {
+        "header": {
+            k: v for k, v in header_cfg.items()
+            if k not in ("path",)  # path is covered by header SHA
+        },
+        "codegen": codegen_cfg_raw,
+        "bindings_keys": sorted(bindings_cfg.keys()),
+    }
+    canonical = json.dumps(relevant, sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _read_idl_cache(cache_path: Path) -> dict[str, Any]:
+    """Read .idl.cache file, return empty dict on any error."""
+    try:
+        if cache_path.exists():
+            return json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def _write_idl_cache(cache_path: Path, header_sha256: str, config_hash: str, idl_sha256: str) -> None:
+    """Write .idl.cache file alongside the IDL JSON."""
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "header_sha256": header_sha256,
+            "config_hash": config_hash,
+            "idl_sha256": idl_sha256,
+            "generated_at": dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        cache_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass  # caching is best-effort
+
+
 def build_codegen_for_target(
     *,
     repo_root: Path,
@@ -65,25 +116,12 @@ def build_codegen_for_target(
     dry_run: bool,
     check: bool,
     print_diff: bool,
+    force_regen: bool = False,
 ) -> dict[str, Any]:
     target = resolve_target(config, target_name)
-    snapshot = build_snapshot(
-        config=config,
-        target_name=target_name,
-        repo_root=repo_root,
-        binary_override=binary_override,
-        skip_binary=skip_binary,
-    )
     codegen_cfg = resolve_codegen_config(target=target, target_name=target_name, repo_root=repo_root)
-    bindings_metadata = resolve_bindings_metadata(target=target, target_name=target_name, repo_root=repo_root)
-    idl_payload = build_idl_payload(
-        target_name=target_name,
-        snapshot=snapshot,
-        codegen_cfg=codegen_cfg,
-        bindings_metadata=bindings_metadata,
-    )
-    validate_idl_payload(idl_payload, f"generated IDL payload '{target_name}'")
 
+    # Determine IDL output path early so we can check the cache
     if idl_output_override:
         idl_output_path = ensure_relative_path(repo_root, idl_output_override).resolve()
     else:
@@ -93,6 +131,63 @@ def build_codegen_for_target(
         else:
             idl_output_path = ensure_relative_path(repo_root, f"abi/generated/{target_name}.idl.json").resolve()
 
+    cache_path = idl_output_path.with_suffix("").with_suffix(".idl.cache")
+
+    # Compute current header SHA256 and config hash for cache comparison
+    header_cfg = target.get("header") or {}
+    header_path_value = header_cfg.get("path") or ""
+    header_path = ensure_relative_path(repo_root, header_path_value).resolve() if header_path_value else None
+    current_header_sha = _compute_header_sha256(header_path) if header_path else ""
+    current_config_hash = _compute_config_hash(target)
+
+    # Check cache: if IDL exists and header+config+idl content unchanged, skip re-parsing
+    idl_payload: dict[str, Any] | None = None
+    snapshot: dict[str, Any] | None = None
+    cache_hit = False
+
+    if not force_regen and idl_output_path.exists() and current_header_sha:
+        cached = _read_idl_cache(cache_path)
+        if (
+            cached.get("header_sha256") == current_header_sha
+            and cached.get("config_hash") == current_config_hash
+        ):
+            try:
+                idl_text_on_disk = idl_output_path.read_bytes()
+                # Also verify IDL file hasn't been externally modified
+                current_idl_sha = hashlib.sha256(idl_text_on_disk).hexdigest()
+                cached_idl_sha = cached.get("idl_sha256", "")
+                if not cached_idl_sha or cached_idl_sha == current_idl_sha:
+                    idl_payload = json.loads(idl_text_on_disk.decode("utf-8"))
+                    if isinstance(idl_payload, dict) and idl_payload:
+                        cache_hit = True
+                        print(f"[{target_name}] IDL up to date (cached), skipping header parse")
+                    else:
+                        idl_payload = None
+            except (OSError, json.JSONDecodeError):
+                idl_payload = None
+
+    if not cache_hit:
+        snapshot = build_snapshot(
+            config=config,
+            target_name=target_name,
+            repo_root=repo_root,
+            binary_override=binary_override,
+            skip_binary=skip_binary,
+        )
+        bindings_metadata = resolve_bindings_metadata(target=target, target_name=target_name, repo_root=repo_root)
+        idl_payload = build_idl_payload(
+            target_name=target_name,
+            snapshot=snapshot,
+            codegen_cfg=codegen_cfg,
+            bindings_metadata=bindings_metadata,
+        )
+    else:
+        # For sync comparison we still need the snapshot, but we can build a lightweight version
+        # from the cached IDL functions list so we don't re-parse the header
+        bindings_metadata = resolve_bindings_metadata(target=target, target_name=target_name, repo_root=repo_root)
+
+    validate_idl_payload(idl_payload, f"generated IDL payload '{target_name}'")
+
     idl_text = json.dumps(idl_payload, indent=2, sort_keys=True) + "\n"
     idl_status, idl_diff = write_artifact_if_changed(
         path=idl_output_path,
@@ -100,6 +195,10 @@ def build_codegen_for_target(
         dry_run=dry_run,
         check=check,
     )
+    # Write cache file after successful IDL write (not in dry_run or check mode)
+    if not cache_hit and not dry_run and not check and current_header_sha:
+        idl_sha = hashlib.sha256(idl_text.encode("utf-8")).hexdigest()
+        _write_idl_cache(cache_path, current_header_sha, current_config_hash, idl_sha)
     artifacts: dict[str, Any] = {
         "idl": {
             "path": to_repo_relative(idl_output_path, repo_root),
@@ -170,7 +269,7 @@ def build_codegen_for_target(
     return {
         "target": target_name,
         "target_config": target,
-        "snapshot": snapshot,
+        "snapshot": snapshot or {},
         "idl_payload": idl_payload,
         "idl_output_path_abs": idl_output_path,
         "codegen_config": {

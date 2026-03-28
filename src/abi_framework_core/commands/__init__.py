@@ -10,6 +10,7 @@ from .targets import (
     command_scaffold_managed_bindings,
     command_generate_python_bindings,
     command_generate_rust_ffi,
+    command_generate_baseline,
 )
 from .verification import (
     command_diff,
@@ -30,6 +31,7 @@ __all__ = [
     "command_diff",
     "command_doctor",
     "command_generate",
+    "command_generate_baseline",
     "command_generate_python_bindings",
     "command_generate_rust_ffi",
     "command_init_target",
