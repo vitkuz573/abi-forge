@@ -8,6 +8,7 @@
     <TrimMode>copyused</TrimMode>
     <IsAotCompatible>false</IsAotCompatible>
     <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <LangVersion>latest</LangVersion>
 
     <!-- NuGet package metadata -->
     <PackageId>Abi.RoslynGenerator</PackageId>
