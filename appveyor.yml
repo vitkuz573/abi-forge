@@ -37,6 +37,14 @@ build_script:
         VERSION="${APPVEYOR_REPO_TAG_NAME#v}"
         echo "Publishing version $VERSION"
 
+        PYPI_TOKEN="${PYPI_API_TOKEN:-}"
+        NUGET_TOKEN="${NUGET_API_KEY:-}"
+
+        if [ -z "$PYPI_TOKEN" ] || [ -z "$NUGET_TOKEN" ]; then
+          echo "ERROR: PYPI_API_TOKEN or NUGET_API_KEY not set in AppVeyor project settings"
+          exit 1
+        fi
+
         # Update version in pyproject.toml
         sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
 
@@ -44,7 +52,7 @@ build_script:
         python3 -m build
         twine upload dist/* \
           --username __token__ \
-          --password "$PYPI_API_TOKEN" \
+          --password "$PYPI_TOKEN" \
           --skip-existing
 
         # Build and publish NuGet package
@@ -54,7 +62,7 @@ build_script:
           --output nupkgs
 
         dotnet nuget push nupkgs/*.nupkg \
-          --api-key "$NUGET_API_KEY" \
+          --api-key "$NUGET_TOKEN" \
           --source https://api.nuget.org/v3/index.json \
           --skip-duplicate
       fi
