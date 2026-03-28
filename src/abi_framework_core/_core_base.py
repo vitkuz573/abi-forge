@@ -472,6 +472,11 @@ def validate_config_payload(payload: dict[str, Any]) -> None:
                         raise AbiFrameworkError(
                             f"target '{target_name}'.bindings.generators[{idx}] must specify at least one of: command, manifest, plugin"
                         )
+                    if plugin is not None and command is not None:
+                        raise AbiFrameworkError(
+                            f"target '{target_name}'.bindings.generators[{idx}]: "
+                            f"'plugin' and 'command' are mutually exclusive — use 'plugin' with 'manifest' (or omit 'manifest' for SDK auto-resolve)"
+                        )
 
         target_policy = target.get("policy")
         if target_policy is not None:

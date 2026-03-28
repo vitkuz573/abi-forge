@@ -640,7 +640,7 @@ typedef void (LUMENRTC_CALL *lrtc_void_cb)(void* user_data);
         )
         self.assertEqual(exit_code, 1)
 
-    def test_config_validation_generator_plugin_requires_manifest(self) -> None:
+    def test_config_validation_generator_plugin_and_command_mutually_exclusive(self) -> None:
         config_path = self.repo_root / "abi" / "config.json"
         config = abi_framework.load_json(config_path)
         config["targets"]["demo"]["bindings"]["generators"] = [
