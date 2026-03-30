@@ -336,19 +336,17 @@
       "owners": ["@vitkuz573"]
     },
     {
-      "name": "abi_framework.managed_api",
+      "name": "abi_framework.native_impl_handles",
       "version": "1.0.0",
-      "description": "Validate managed API metadata and render native impl handle header.",
+      "description": "Generate C++ native impl handle struct header from managed_api metadata.",
       "entrypoint": {
         "kind": "external",
         "command": [
           "python3",
-          "{abi_forge_sdk}/managed_api_codegen.py",
-          "--idl",
-          "{idl}",
+          "{abi_forge_sdk}/native_impl_handles_generator.py",
           "--managed-api",
           "{repo_root}/abi/bindings/{target}.managed_api.json",
-          "--out-native-handles",
+          "--out",
           "{repo_root}/native/src/{target}_impl_handles.generated.h",
           "{check}",
           "{dry_run}"
@@ -363,11 +361,10 @@
       },
       "contracts": {
         "inputs": [
-          {"name": "idl", "path_arg": "--idl", "required": true},
           {"name": "managed_api", "path_arg": "--managed-api", "required": true}
         ],
         "outputs": [
-          {"name": "native_impl_handles_header", "path_arg": "--out-native-handles", "required": true}
+          {"name": "native_impl_handles_header", "path_arg": "--out", "required": true}
         ]
       },
       "owners": ["@vitkuz573"]

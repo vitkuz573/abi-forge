@@ -2615,154 +2615,76 @@ MY_API int MY_CALL my_init(void);
         self.assertNotEqual(exit_code, 0)
 
 
-class ManagedApiCodegenTests(unittest.TestCase):
-    """Tests for the generic managed_api_codegen.py generator."""
+class NativeImplHandlesGeneratorTests(unittest.TestCase):
+    """Tests for native_impl_handles_generator.py."""
 
     GENERATOR_SDK = Path(__file__).resolve().parents[1] / "generator_sdk"
     CORE_SRC = Path(__file__).resolve().parents[1] / "abi_codegen_core" / "src"
 
     @classmethod
-    def _import_codegen(cls):
+    def _import_generator(cls):
         if str(cls.CORE_SRC) not in sys.path:
             sys.path.insert(0, str(cls.CORE_SRC))
-        spec_path = cls.GENERATOR_SDK / "managed_api_codegen.py"
+        spec_path = cls.GENERATOR_SDK / "native_impl_handles_generator.py"
         import importlib.util
-        spec = importlib.util.spec_from_file_location("managed_api_codegen", spec_path)
+        spec = importlib.util.spec_from_file_location("native_impl_handles_generator", spec_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
 
     def setUp(self):
-        self.mod = self._import_codegen()
+        self.mod = self._import_generator()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.tmp = Path(self.temp_dir.name)
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def _minimal_schema(self, extra=None):
-        base = {
-            "schema_version": 2,
-            "namespace": "MyLib",
-            "required_native_functions": [],
-            "native_impl_handles": [],
-            "callbacks": [],
-        }
-        if extra:
-            base.update(extra)
-        return base
+    def _metadata(self, handles):
+        return {"native_impl_handles": handles}
 
-    def _minimal_idl(self, names=None):
-        return {
-            "schema_version": 1,
-            "functions": [
-                {"name": n, "return_type": "int", "parameters": []}
-                for n in (names or [])
-            ],
-        }
-
-    def test_render_native_impl_handles_basic(self):
-        schema = self._minimal_schema({
-            "native_impl_handles": [
-                {"name": "my_handle_t", "fields": ["void* ptr;", "int ref_count;"]},
-            ],
-        })
-        result = self.mod.render_native_impl_handles(schema)
+    def test_render_basic(self):
+        metadata = self._metadata([
+            {"name": "my_handle_t", "fields": ["void* ptr;", "int ref_count;"]},
+        ])
+        result = self.mod.render(metadata)
         self.assertIn("#pragma once", result)
         self.assertIn("struct my_handle_t {", result)
         self.assertIn("  void* ptr;", result)
         self.assertIn("  int ref_count;", result)
 
-    def test_render_native_impl_handles_empty(self):
-        schema = self._minimal_schema({"native_impl_handles": []})
-        result = self.mod.render_native_impl_handles(schema)
+    def test_render_empty(self):
+        metadata = self._metadata([])
+        result = self.mod.render(metadata)
         self.assertIn("#pragma once", result)
-        # No struct definitions for empty list
         self.assertNotIn("struct ", result)
 
-    def test_render_callbacks_generated(self):
-        schema = self._minimal_schema({
-            "callbacks": [
-                {
-                    "class": "FooCallbacks",
-                    "summary": "Foo event callbacks.",
-                    "native_struct": "foo_callbacks_t",
-                    "fields": [
-                        {
-                            "managed_type": "Action?",
-                            "managed_name": "OnFoo",
-                            "delegate_type": "foo_cb_delegate",
-                            "delegate_field": "_onFoo",
-                            "native_field": "on_foo",
-                            "assignment_lines": ["Marshal.GetFunctionPointerForDelegate(OnFoo)"],
-                        }
-                    ],
-                }
-            ],
-        })
-        result = self.mod.render_callbacks(schema)
-        self.assertIn("public sealed class FooCallbacks", result)
-        self.assertIn("BuildNative()", result)
-        self.assertIn("namespace MyLib;", result)
-
-    def test_render_validates_schema_version(self):
-        schema = self._minimal_schema({"schema_version": 1})
-        idl_path = self.tmp / "bad.idl.json"
-        api_path = self.tmp / "bad.managed_api.json"
-        idl_path.write_text(json.dumps(self._minimal_idl()), encoding="utf-8")
-        api_path.write_text(json.dumps(schema), encoding="utf-8")
-        out_path = self.tmp / "out.h"
-
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(self.GENERATOR_SDK / "managed_api_codegen.py"),
-                "--idl", str(idl_path),
-                "--managed-api", str(api_path),
-                "--out-native-handles", str(out_path),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("schema_version", result.stderr + result.stdout)
-
     def test_cli_check_mode(self):
-        schema = self._minimal_schema({
-            "native_impl_handles": [
-                {"name": "bar_t", "fields": ["int x;"]},
-            ],
-        })
-        idl = self._minimal_idl()
-        idl_path = self.tmp / "lib.idl.json"
+        metadata = self._metadata([
+            {"name": "bar_t", "fields": ["int x;"]},
+        ])
         api_path = self.tmp / "lib.managed_api.json"
         out_path = self.tmp / "lib_impl_handles.generated.h"
+        api_path.write_text(json.dumps(metadata), encoding="utf-8")
 
-        idl_path.write_text(json.dumps(idl), encoding="utf-8")
-        api_path.write_text(json.dumps(schema), encoding="utf-8")
-
-        # First generate the file
         subprocess.run(
             [
                 sys.executable,
-                str(self.GENERATOR_SDK / "managed_api_codegen.py"),
-                "--idl", str(idl_path),
+                str(self.GENERATOR_SDK / "native_impl_handles_generator.py"),
                 "--managed-api", str(api_path),
-                "--out-native-handles", str(out_path),
+                "--out", str(out_path),
             ],
             capture_output=True,
             text=True,
             check=True,
         )
 
-        # Now run with --check — should succeed (no drift)
         result = subprocess.run(
             [
                 sys.executable,
-                str(self.GENERATOR_SDK / "managed_api_codegen.py"),
-                "--idl", str(idl_path),
+                str(self.GENERATOR_SDK / "native_impl_handles_generator.py"),
                 "--managed-api", str(api_path),
-                "--out-native-handles", str(out_path),
+                "--out", str(out_path),
                 "--check",
             ],
             capture_output=True,
