@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from .core import AbiFrameworkError
 from .commands import (
@@ -49,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="Repository root used to resolve relative paths (default: current directory).",
     )
-    snapshot.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    snapshot.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     snapshot.add_argument("--target", required=True, help="Target name from config targets map.")
     snapshot.add_argument("--binary", help="Override binary path for export checks.")
     snapshot.add_argument("--skip-binary", action="store_true", help="Skip binary export extraction.")
@@ -62,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="Repository root used to resolve relative paths (default: current directory).",
     )
-    verify.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    verify.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     verify.add_argument("--target", required=True, help="Target name from config targets map.")
     verify.add_argument("--baseline", required=True, help="Path to baseline snapshot JSON.")
     verify.add_argument("--binary", help="Override binary path for export checks.")
@@ -86,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="Repository root used to resolve relative paths (default: current directory).",
     )
-    verify_all.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    verify_all.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     verify_all.add_argument("--baseline-root", help="Baseline directory (default: target baseline_path or abi/baselines).")
     verify_all.add_argument("--binary", help="Override binary path for export checks (applies to each target).")
     verify_all.add_argument("--skip-binary", action="store_true", help="Skip binary export extraction for all targets.")
@@ -107,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="Repository root used to resolve relative paths (default: current directory).",
     )
-    regen.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    regen.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     regen.add_argument("--baseline-root", help="Baseline directory override (otherwise target baseline_path is used).")
     regen.add_argument("--binary", help="Override binary path for export checks.")
     regen.add_argument("--skip-binary", action="store_true", help="Skip binary export extraction while regenerating.")
@@ -123,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="Repository root used to resolve relative paths (default: current directory).",
     )
-    doctor.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    doctor.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     doctor.add_argument("--baseline-root", help="Baseline directory override.")
     doctor.add_argument("--binary", help="Override binary path for checks.")
     doctor.add_argument("--require-baselines", action="store_true", help="Fail if any baseline is missing.")
@@ -132,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.set_defaults(func=command_doctor)
 
     waiver_audit = sub.add_parser("waiver-audit", help="Audit waiver metadata, expiry, and policy compliance.")
-    waiver_audit.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    waiver_audit.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     waiver_audit.add_argument("--target", help="Optional target name. If omitted, all targets are audited.")
     waiver_audit.add_argument("--output", help="Write waiver audit report JSON to path.")
     waiver_audit.add_argument("--print-json", action="store_true", help="Print aggregate waiver audit JSON.")
@@ -147,7 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="Repository root used to resolve relative paths (default: current directory).",
     )
-    changelog.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    changelog.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     changelog.add_argument("--target", help="Optional target name. If omitted, all targets are included.")
     changelog.add_argument("--baseline", help="Explicit baseline path (only valid with --target).")
     changelog.add_argument("--baseline-root", help="Baseline directory override.")
@@ -168,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="Repository root used to resolve relative paths (default: current directory).",
     )
-    generate.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    generate.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     generate.add_argument("--target", help="Optional target name. If omitted, all targets are processed.")
     generate.add_argument("--binary", help="Override binary path for export checks.")
     generate.add_argument("--skip-binary", action="store_true", help="Skip binary export extraction.")
@@ -187,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="Repository root used to resolve relative paths (default: current directory).",
     )
-    codegen.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    codegen.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     codegen.add_argument("--target", help="Optional target name. If omitted, all targets are processed.")
     codegen.add_argument("--binary", help="Override binary path for export checks.")
     codegen.add_argument("--skip-binary", action="store_true", help="Skip binary export extraction.")
@@ -206,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="Repository root used to resolve relative paths (default: current directory).",
     )
-    sync.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    sync.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     sync.add_argument("--target", help="Optional target name. If omitted, all targets are processed.")
     sync.add_argument("--baseline-root", help="Baseline directory override.")
     sync.add_argument("--binary", help="Override binary path for export checks.")
@@ -227,7 +228,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="Repository root used to resolve relative paths (default: current directory).",
     )
-    release_prepare.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    release_prepare.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     release_prepare.add_argument("--baseline-root", help="Baseline directory override.")
     release_prepare.add_argument("--binary", help="Override binary path for export checks.")
     release_prepare.add_argument("--skip-binary", action="store_true", help="Skip binary export extraction.")
@@ -261,7 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="Repository root used to resolve relative paths (default: current directory).",
     )
-    benchmark.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    benchmark.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     benchmark.add_argument("--target", help="Optional target name. If omitted, all targets are benchmarked.")
     benchmark.add_argument("--baseline-root", help="Baseline directory override.")
     benchmark.add_argument("--binary", help="Override binary path for export checks.")
@@ -301,12 +302,12 @@ def build_parser() -> argparse.ArgumentParser:
     plugin_manifest.set_defaults(func=command_validate_plugin_manifest)
 
     list_targets = sub.add_parser("list-targets", help="List target names from config.")
-    list_targets.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    list_targets.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     list_targets.set_defaults(func=command_list_targets)
 
     init_target = sub.add_parser("init-target", help="Bootstrap a new ABI target in config and create baseline.")
     init_target.add_argument("--repo-root", default=".", help="Repository root for relative path resolution.")
-    init_target.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    init_target.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     init_target.add_argument("--target", required=True, help="Target name to initialize.")
     init_target.add_argument("--header-path", required=True, help="Header path relative to repo root.")
     init_target.add_argument("--api-macro", default="", help="Export macro (default: <TARGET>_API).")
@@ -352,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
     # bootstrap command
     bootstrap = sub.add_parser("bootstrap", help="Full setup pipeline for a new library target.")
     bootstrap.add_argument("--repo-root", default=".")
-    bootstrap.add_argument("--config", required=True)
+    bootstrap.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     bootstrap.add_argument("--target", required=True)
     bootstrap.add_argument("--header-path", required=True)
     bootstrap.add_argument("--namespace", required=True, help="C# namespace for generated code.")
@@ -371,7 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     # status command
     status = sub.add_parser("status", help="Show ABI setup health dashboard.")
     status.add_argument("--repo-root", default=".")
-    status.add_argument("--config", required=True)
+    status.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     status.add_argument("--target", required=True, help="Target name from config.")
     status.add_argument("--skip-binary", action="store_true")
     status.set_defaults(func=command_status)
@@ -400,7 +401,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Copy current IDL snapshot to baseline path (updates the baseline).",
     )
     gen_baseline.add_argument("--repo-root", default=".", help="Repository root for relative path resolution.")
-    gen_baseline.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    gen_baseline.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     gen_baseline.add_argument("--target", default=None, help="Target name (optional; all targets if omitted).")
     gen_baseline.add_argument("--force", action="store_true", help="Overwrite existing baseline.")
     gen_baseline.set_defaults(func=command_generate_baseline)
@@ -408,7 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
     # watch command
     watch = sub.add_parser("watch", help="Watch header/metadata files and re-run on change.")
     watch.add_argument("--repo-root", default=".", help="Repository root for relative path resolution.")
-    watch.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    watch.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
     watch.add_argument("--target", default=None, help="Target name (optional; all targets if omitted).")
     watch.add_argument(
         "--command",
@@ -480,6 +481,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if hasattr(args, "no_create_baseline"):
         args.create_baseline = not bool(args.no_create_baseline)
+
+    _COMMANDS_NO_AUTO_CONFIG = {
+        "diff", "benchmark-gate", "validate-plugin-manifest", "new-plugin",
+        "test-plugin", "generate-python-bindings", "generate-rust-ffi",
+        "scaffold-managed-api", "scaffold-managed-bindings",
+    }
+    if getattr(args, "config", None) is None and args.command not in _COMMANDS_NO_AUTO_CONFIG:
+        repo_root = getattr(args, "repo_root", ".")
+        args.config = str(Path(repo_root) / "abi" / "config.json")
 
     try:
         return int(args.func(args))
