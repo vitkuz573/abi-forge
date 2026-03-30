@@ -81,7 +81,13 @@ _C_TO_CTYPES: dict[str, str] = {
 }
 
 
-def c_type_to_ctypes(c_type: str, opaque_types: set[str], symbol_prefix: str) -> str:
+def c_type_to_ctypes(
+    c_type: str,
+    opaque_types: set[str],
+    symbol_prefix: str,
+    enum_types: set[str] | None = None,
+    struct_types: set[str] | None = None,
+) -> str:
     """Convert a C type string to its ctypes equivalent."""
     t = c_type.strip()
     bare = re.sub(r"\bconst\b", "", t).strip()
@@ -110,12 +116,20 @@ def c_type_to_ctypes(c_type: str, opaque_types: set[str], symbol_prefix: str) ->
             return f"ctypes.POINTER({ct})"
         return ct if ct != "None" else "None"
 
-    # Struct pointer
+    # Struct pointer — use infer_class_name to correctly strip symbol_prefix
     if is_ptr:
-        struct_name = snake_to_pascal(strip_suffix(strip_suffix(bare_no_ptr, "_t"), "_s"))
+        struct_name = infer_class_name(bare_no_ptr, symbol_prefix)
         return f"ctypes.POINTER({struct_name})"
 
-    # Unknown struct/enum (passed by value - rare)
+    # Enum by value → int-sized
+    if enum_types and bare_no_ptr in enum_types:
+        return "ctypes.c_int"
+
+    # Struct by value (forward reference — class name used directly)
+    if struct_types and bare_no_ptr in struct_types:
+        return infer_class_name(bare_no_ptr, symbol_prefix)
+
+    # Unknown fallback
     return "ctypes.c_void_p"
 
 
@@ -286,7 +300,9 @@ def generate_bindings(
     opaque_types = get_opaque_types(idl)
     opaque_set = set(opaque_types.keys())
     enums = get_enums(idl)
+    enum_set = set(enums.keys())
     structs = get_structs(idl)
+    struct_set = set(structs.keys())
     callback_typedefs = get_callback_typedefs(idl)
     functions: list[dict[str, Any]] = idl.get("functions") or []
 
@@ -406,12 +422,12 @@ def generate_bindings(
         # e.g. typedef void (MYLIB_CALL *mylib_sdp_success_cb)(...)
         ret_match = re.match(r"typedef\s+(\w[\w\s\*]*?)\s*\(", decl)
         ret_c = ret_match.group(1).strip() if ret_match else "void"
-        ret_ct = c_type_to_ctypes(ret_c, opaque_set, sp)
+        ret_ct = c_type_to_ctypes(ret_c, opaque_set, sp, enum_set, struct_set)
 
         raw_params = parse_callback_params(decl)
         param_cts: list[str] = []
         for c_type, _name in raw_params:
-            param_cts.append(c_type_to_ctypes(c_type, opaque_set, sp))
+            param_cts.append(c_type_to_ctypes(c_type, opaque_set, sp, enum_set, struct_set))
 
         type_name = snake_to_pascal(strip_prefix(cb_name, sp))
         all_types = [ret_ct] + param_cts
@@ -441,25 +457,17 @@ def generate_bindings(
                     # Function pointer field → use c_void_p
                     f_ct = "ctypes.c_void_p"
                 elif f_decl and f_name:
-                    # Parse type from declaration: everything except the last identifier
-                    # Strip trailing field name, handle pointer prefix
-                    d = f_decl.strip()
-                    if d.endswith(f_name):
-                        f_c_type = d[: -len(f_name)].strip().rstrip("*").strip()
-                        if d[: -len(f_name)].strip().endswith("*"):
-                            f_c_type = d[: -len(f_name)].strip()[:-1].strip() + "*"
-                            # reconstruct: base type + pointer
-                            base = d[: -len(f_name)].strip()
-                            f_c_type = base
-                        else:
-                            f_c_type = f_c_type
-                        # Actually do a simple rsplit on space
-                        tokens = f_decl.rsplit(None, 1)
-                        f_c_type = tokens[0].strip() if len(tokens) >= 2 else "int"
+                    # Detect array field: "some_type field_name[N]"
+                    array_m = re.match(r'^(.+?)\s+\w+\[(\d+)\]\s*$', f_decl)
+                    if array_m:
+                        f_c_type = array_m.group(1).strip()
+                        array_count = array_m.group(2)
+                        elem_ct = c_type_to_ctypes(f_c_type, opaque_set, sp, enum_set, struct_set)
+                        f_ct = f"{elem_ct} * {array_count}"
                     else:
                         tokens = f_decl.rsplit(None, 1)
                         f_c_type = tokens[0].strip() if len(tokens) >= 2 else "int"
-                    f_ct = c_type_to_ctypes(f_c_type, opaque_set, sp)
+                        f_ct = c_type_to_ctypes(f_c_type, opaque_set, sp, enum_set, struct_set)
                 else:
                     f_ct = "ctypes.c_int"
                 lines.append(f'        ("{f_name}", {f_ct}),')
@@ -486,14 +494,14 @@ def generate_bindings(
         ret_c = str(func.get("c_return_type") or "void")
         params: list[dict[str, Any]] = func.get("parameters") or []
 
-        ret_ct = c_type_to_ctypes(ret_c, opaque_set, sp)
+        ret_ct = c_type_to_ctypes(ret_c, opaque_set, sp, enum_set, struct_set)
         if ret_ct == "None":
             bind_lines.append(f"    lib.{f_name}.restype = None")
         else:
             bind_lines.append(f"    lib.{f_name}.restype = {ret_ct}")
 
         if params:
-            arg_types = [c_type_to_ctypes(str(p.get("c_type") or "void"), opaque_set, sp) for p in params]
+            arg_types = [c_type_to_ctypes(str(p.get("c_type") or "void"), opaque_set, sp, enum_set, struct_set) for p in params]
             bind_lines.append(f"    lib.{f_name}.argtypes = [{', '.join(arg_types)}]")
         else:
             bind_lines.append(f"    lib.{f_name}.argtypes = []")
