@@ -10,25 +10,31 @@ from .commands import (
     command_benchmark_gate,
     command_bootstrap,
     command_changelog,
+    command_check,
     command_ci_config,
     command_codegen,
     command_diff,
     command_doctor,
+    command_gen,
+    command_gen_csproj_snippet,
     command_generate,
     command_generate_baseline,
     command_generate_python_bindings,
     command_generate_rust_ffi,
     command_init_target,
     command_list_targets,
+    command_new_lib,
     command_new_plugin,
     command_regen_baselines,
     command_release_prepare,
     command_scaffold_managed_api,
     command_scaffold_managed_bindings,
+    command_scan_header,
     command_snapshot,
     command_status,
     command_sync,
     command_test_plugin,
+    command_upgrade_config,
     command_validate_plugin_manifest,
     command_verify,
     command_verify_all,
@@ -453,6 +459,74 @@ def build_parser() -> argparse.ArgumentParser:
     test_plugin.add_argument("--fail-on-warnings", action="store_true", help="Treat skipped checks as failures.")
     test_plugin.set_defaults(func=command_test_plugin)
 
+    # gen command  (generate + codegen in one shot)
+    gen = sub.add_parser("gen", help="Parse header → IDL → run all generators in one shot (generate + codegen).")
+    gen.add_argument("--repo-root", default=".", help="Repository root.")
+    gen.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
+    gen.add_argument("--target", default=None, help="Target name (optional; all targets if omitted).")
+    gen.add_argument("--skip-binary", action="store_true", help="Skip binary export extraction.")
+    gen.add_argument("--check", action="store_true", help="Fail when generated artifacts drift from disk.")
+    gen.add_argument("--dry-run", action="store_true", help="Do not write files.")
+    gen.add_argument("--print-diff", action="store_true", help="Print unified diff for changed artifacts.")
+    gen.add_argument("--fail-on-sync", action="store_true", help="Fail if symbol contract drifts.")
+    gen.add_argument("--force-regen", action="store_true", help="Bypass IDL cache.")
+    gen.add_argument("--report-json", default=None, help="Write codegen report JSON.")
+    gen.set_defaults(func=command_gen)
+
+    # check command  (full local CI suite)
+    check = sub.add_parser("check", help="Full local CI: plugin validation + codegen --check + verify-all.")
+    check.add_argument("--repo-root", default=".", help="Repository root.")
+    check.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
+    check.add_argument("--target", default=None, help="Target name (optional; all targets if omitted).")
+    check.add_argument("--skip-binary", action="store_true", help="Skip binary export extraction.")
+    check.add_argument("--fail-on-warnings", action="store_true", help="Treat warnings as failures.")
+    check.add_argument("--print-diff", action="store_true", help="Print unified diff on codegen drift.")
+    check.add_argument("--output-dir", default=None, help="Directory for verify-all reports.")
+    check.add_argument("--report-json", default=None, help="Write codegen report JSON.")
+    check.set_defaults(func=command_check)
+
+    # scan-header command
+    scan_header = sub.add_parser("scan-header", help="Scan a C header and suggest abi/config.json values.")
+    scan_header.add_argument("--header", required=True, help="Path to C header file.")
+    scan_header.add_argument("--json", action="store_true", help="Output as JSON.")
+    scan_header.set_defaults(func=command_scan_header)
+
+    # upgrade-config command
+    upgrade_config = sub.add_parser("upgrade-config", help="Auto-migrate abi/config.json to current schema.")
+    upgrade_config.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
+    upgrade_config.add_argument("--check", action="store_true", help="Fail if config is out of date.")
+    upgrade_config.add_argument("--dry-run", action="store_true", help="Show changes without writing.")
+    upgrade_config.set_defaults(func=command_upgrade_config)
+
+    # new-lib command
+    new_lib = sub.add_parser("new-lib", help="Scaffold a complete new C library project from scratch.")
+    new_lib.add_argument("--target", required=True, help="Library target name (e.g. mylib).")
+    new_lib.add_argument("--output-dir", default=None, help="Output directory (default: ./<target>).")
+    new_lib.add_argument("--namespace", default=None, help="C# namespace (default: PascalCase of target).")
+    new_lib.add_argument("--header", default=None, help="Existing C header to copy/scan (optional).")
+    new_lib.add_argument("--api-macro", default="", help="API export macro (auto-detected if --header given).")
+    new_lib.add_argument("--call-macro", default="", help="Calling convention macro.")
+    new_lib.add_argument("--symbol-prefix", default="", help="Symbol prefix (auto-detected if --header given).")
+    new_lib.add_argument("--dotnet", action="store_true", help="Include .NET/C# project.")
+    new_lib.add_argument("--python", action="store_true", help="Include Python ctypes generator.")
+    new_lib.add_argument("--rust", action="store_true", help="Include Rust FFI generator.")
+    new_lib.add_argument("--typescript", action="store_true", help="Include TypeScript generator.")
+    new_lib.add_argument("--go", action="store_true", help="Include Go cgo generator.")
+    new_lib.add_argument("--force", action="store_true", help="Overwrite existing output directory.")
+    new_lib.set_defaults(func=command_new_lib)
+
+    # gen-csproj-snippet command
+    gen_csproj = sub.add_parser(
+        "gen-csproj-snippet",
+        help="Emit the AdditionalFiles XML ItemGroup for wiring AbiForge.RoslynGenerator into a .csproj.",
+    )
+    gen_csproj.add_argument("--config", default=None, help="Path to ABI config JSON (default: abi/config.json).")
+    gen_csproj.add_argument("--repo-root", default=".", help="Repository root.")
+    gen_csproj.add_argument("--target", default=None, help="Limit to a single target.")
+    gen_csproj.add_argument("--csproj", default=None, help="Path to .csproj file (used to compute relative paths).")
+    gen_csproj.add_argument("--output", default=None, help="Write snippet to file instead of stdout.")
+    gen_csproj.set_defaults(func=command_gen_csproj_snippet)
+
     # ci-config command
     ci_config = sub.add_parser("ci-config", help="Generate CI workflow configuration for ABI checks.")
     ci_config.add_argument(
@@ -486,6 +560,7 @@ def main(argv: list[str] | None = None) -> int:
         "diff", "benchmark-gate", "validate-plugin-manifest", "new-plugin",
         "test-plugin", "generate-python-bindings", "generate-rust-ffi",
         "scaffold-managed-api", "scaffold-managed-bindings",
+        "scan-header", "new-lib",
     }
     if getattr(args, "config", None) is None and args.command not in _COMMANDS_NO_AUTO_CONFIG:
         repo_root = getattr(args, "repo_root", ".")

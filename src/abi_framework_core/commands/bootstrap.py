@@ -7,6 +7,7 @@ from typing import Any
 
 from .targets import command_init_target, command_scaffold_managed_api, command_scaffold_managed_bindings
 from .generation import command_generate
+from .scan_header import scan_header_file
 
 
 def command_bootstrap(args: argparse.Namespace) -> int:
@@ -15,6 +16,34 @@ def command_bootstrap(args: argparse.Namespace) -> int:
     target = args.target
     generate_python = getattr(args, "generate_python", False)
     generate_rust = getattr(args, "generate_rust", False)
+
+    # Auto-detect api_macro / symbol_prefix / call_macro from header if not given
+    header_path_raw = getattr(args, "header_path", "")
+    api_macro = getattr(args, "api_macro", "") or ""
+    call_macro = getattr(args, "call_macro", "") or ""
+    symbol_prefix = getattr(args, "symbol_prefix", "") or ""
+
+    if header_path_raw and (not api_macro or not symbol_prefix):
+        hp = (repo_root / header_path_raw).resolve()
+        if hp.exists():
+            try:
+                detected = scan_header_file(hp)
+                if not api_macro and detected["api_macro"]:
+                    api_macro = detected["api_macro"]
+                    print(f"[bootstrap] Auto-detected api_macro={api_macro!r}")
+                if not call_macro and detected["call_macro"]:
+                    call_macro = detected["call_macro"]
+                    print(f"[bootstrap] Auto-detected call_macro={call_macro!r}")
+                if not symbol_prefix and detected["symbol_prefix"]:
+                    symbol_prefix = detected["symbol_prefix"]
+                    print(f"[bootstrap] Auto-detected symbol_prefix={symbol_prefix!r}")
+            except Exception as exc:
+                print(f"[bootstrap] header scan skipped: {exc}", file=sys.stderr)
+
+    # Write back so init_target picks them up
+    args.api_macro = api_macro
+    args.call_macro = call_macro
+    args.symbol_prefix = symbol_prefix
 
     print(f"[bootstrap] Starting setup for target '{target}'...")
 
@@ -164,9 +193,10 @@ def command_bootstrap(args: argparse.Namespace) -> int:
 
 
 def _run_generator_sdk(repo_root: Path, module_name: str, idl_path: Path, out_path: Path) -> None:
-    """Run a generator_sdk module directly."""
-    sdk_path = repo_root / "tools" / "abi_framework" / "generator_sdk"
-    if str(sdk_path) not in sys.path:
+    """Run a generator_sdk module directly (uses pip-installed abi_forge_sdk or local generator_sdk)."""
+    from ..core import get_abi_forge_sdk_path  # noqa: PLC0415
+    sdk_path = get_abi_forge_sdk_path()
+    if sdk_path and str(sdk_path) not in sys.path:
         sys.path.insert(0, str(sdk_path))
 
     if module_name == "python_bindings_generator":

@@ -593,12 +593,12 @@ def generate_bindings(
             for p in extra_params:
                 p_name = str(p.get("name") or "arg")
                 p_type = str(p.get("c_type") or "void")
-                py_type = _ctypes_to_py_annotation(p_type, opaque_set, sp)
+                py_type = _ctypes_to_py_annotation(p_type, opaque_set, sp, enum_set=enum_set, struct_set=struct_set)
                 py_params.append(f"{p_name}: {py_type}")
                 call_args.append(p_name)
 
             param_str = ", ".join(["self"] + py_params)
-            ret_annotation = _ctypes_to_py_annotation(ret_c, opaque_set, sp, is_return=True)
+            ret_annotation = _ctypes_to_py_annotation(ret_c, opaque_set, sp, is_return=True, enum_set=enum_set, struct_set=struct_set)
 
             lines.append(f"    def {method_name}({param_str}) -> {ret_annotation}:")
             call_str = f"get_lib().{f_name}({', '.join(call_args)})"
@@ -632,12 +632,12 @@ def generate_bindings(
             for p in params:
                 p_name = str(p.get("name") or "arg")
                 p_type = str(p.get("c_type") or "void")
-                py_type = _ctypes_to_py_annotation(p_type, opaque_set, sp)
+                py_type = _ctypes_to_py_annotation(p_type, opaque_set, sp, enum_set=enum_set, struct_set=struct_set)
                 py_params.append(f"{p_name}: {py_type}")
                 call_args.append(p_name)
 
             param_str = ", ".join(py_params)
-            ret_annotation = _ctypes_to_py_annotation(ret_c, opaque_set, sp, is_return=True)
+            ret_annotation = _ctypes_to_py_annotation(ret_c, opaque_set, sp, is_return=True, enum_set=enum_set, struct_set=struct_set)
 
             lines.append(f"def {py_name}({param_str}) -> {ret_annotation}:")
             call_str = f"get_lib().{f_name}({', '.join(call_args)})"
@@ -655,8 +655,10 @@ def _ctypes_to_py_annotation(
     opaque_set: set[str],
     symbol_prefix: str,
     is_return: bool = False,
+    enum_set: set[str] | None = None,
+    struct_set: set[str] | None = None,
 ) -> str:
-    """Convert C type to Python type annotation (for docstrings/stubs)."""
+    """Convert C type to Python type annotation."""
     t = c_type.strip()
     bare = re.sub(r"\bconst\b", "", t).strip()
     is_ptr = bare.endswith("*")
@@ -677,14 +679,20 @@ def _ctypes_to_py_annotation(
         ct = _C_TO_CTYPES[bare_no_ptr]
         if ct == "None":
             return "None"
-        # Map ctypes to Python native types
         if ct in ("ctypes.c_bool",):
             return "bool"
         if ct in ("ctypes.c_float", "ctypes.c_double"):
             return "float"
         if ct in ("ctypes.c_char_p",):
             return "Optional[bytes]"
-        return "int"  # integers
+        return "int"
+    # Enum by value → use the Python enum class name
+    if enum_set and bare_no_ptr in enum_set:
+        return infer_class_name(bare_no_ptr, symbol_prefix)
+    # Struct by value → use the Python struct class name
+    if struct_set and bare_no_ptr in struct_set:
+        cls = infer_class_name(bare_no_ptr, symbol_prefix)
+        return cls if not is_ptr else f"Optional[{cls}]"
     return "Any"
 
 

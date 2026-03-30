@@ -25,31 +25,42 @@ from .watch import command_watch
 from .new_plugin import command_new_plugin
 from .test_plugin import command_test_plugin
 from .ci_config import command_ci_config
+from .gen import command_gen, command_check
+from .scan_header import command_scan_header
+from .upgrade_config import command_upgrade_config
+from .new_lib import command_new_lib
+from .csproj import command_gen_csproj_snippet
 
 __all__ = [
     "command_benchmark",
     "command_benchmark_gate",
     "command_bootstrap",
     "command_changelog",
+    "command_check",
     "command_ci_config",
     "command_codegen",
     "command_diff",
     "command_doctor",
+    "command_gen",
+    "command_gen_csproj_snippet",
     "command_generate",
     "command_generate_baseline",
     "command_generate_python_bindings",
     "command_generate_rust_ffi",
     "command_init_target",
     "command_list_targets",
+    "command_new_lib",
     "command_new_plugin",
     "command_regen_baselines",
     "command_release_prepare",
     "command_scaffold_managed_api",
     "command_scaffold_managed_bindings",
+    "command_scan_header",
     "command_snapshot",
     "command_status",
     "command_sync",
     "command_test_plugin",
+    "command_upgrade_config",
     "command_validate_plugin_manifest",
     "command_verify",
     "command_verify_all",

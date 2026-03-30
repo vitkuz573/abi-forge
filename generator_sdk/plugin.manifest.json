@@ -368,6 +368,38 @@
         ]
       },
       "owners": ["@vitkuz573"]
+    },
+    {
+      "name": "abi_framework.layout_probe",
+      "version": "1.0.0",
+      "description": "Generate a C layout probe that verifies struct field names compile against the real header.",
+      "entrypoint": {
+        "kind": "external",
+        "command": [
+          "python3",
+          "{abi_forge_sdk}/layout_probe_generator.py",
+          "--idl", "{idl}",
+          "--out", "{repo_root}/native/src/{target}_layout_probe.c",
+          "{check}",
+          "{dry_run}"
+        ]
+      },
+      "capabilities": {
+        "supports_check": true,
+        "supports_dry_run": true,
+        "deterministic_output": true,
+        "requires_repo_root": true,
+        "writes_managed_sources": false
+      },
+      "contracts": {
+        "inputs": [{"name": "idl", "path_arg": "--idl", "required": true}],
+        "outputs": [{"name": "layout_probe_c", "path_arg": "--out", "required": true}]
+      },
+      "compatibility": {
+        "min_idl_schema_version": 1,
+        "max_idl_schema_version": 1
+      },
+      "owners": ["@vitkuz573"]
     }
   ]
 }
