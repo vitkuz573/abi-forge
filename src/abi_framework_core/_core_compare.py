@@ -1074,3 +1074,14 @@ CLASSIFICATION_ORDER = {
 }
 
 
+def format_annotations_for_github(report: dict[str, Any], source_path: str | None = None) -> str:
+    """Format ABI report errors/warnings as GitHub Actions workflow commands."""
+    file_part = f"file={source_path}," if source_path else ""
+    lines: list[str] = []
+    for error in get_message_list(report, "errors"):
+        lines.append(f"::error {file_part}title=ABI Breaking Change::{error}")
+    for warning in get_message_list(report, "warnings"):
+        lines.append(f"::warning {file_part}title=ABI Warning::{warning}")
+    return "\n".join(lines)
+
+

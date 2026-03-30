@@ -1379,6 +1379,35 @@ def extract_prefixed_define_constants(content: str, macro_prefix: str) -> dict[s
     return {name: constants[name] for name in sorted(constants.keys())}
 
 
+def _collect_local_includes(
+    header_path: Path,
+    repo_root: Path,
+    depth: int,
+    max_depth: int,
+    seen: set[Path],
+) -> list[Path]:
+    """Recursively collect project-local #include "..." dependencies."""
+    if depth >= max_depth or header_path in seen:
+        return []
+    seen.add(header_path)
+    result: list[Path] = []
+    try:
+        text = header_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    for match in re.finditer(r'^\s*#\s*include\s+"([^"]+)"', text, re.MULTILINE):
+        candidate = (header_path.parent / match.group(1)).resolve()
+        try:
+            candidate.relative_to(repo_root)
+        except ValueError:
+            continue
+        if not candidate.exists() or candidate in seen:
+            continue
+        result.append(candidate)
+        result.extend(_collect_local_includes(candidate, repo_root, depth + 1, max_depth, seen))
+    return result
+
+
 def parse_c_header(
     header_path: Path,
     api_macro: str,
@@ -1387,6 +1416,7 @@ def parse_c_header(
     version_macros: dict[str, str],
     type_policy: TypePolicy,
     parser_cfg: dict[str, Any] | None = None,
+    additional_headers: list[Path] | None = None,
 ) -> tuple[dict[str, Any], AbiVersion, dict[str, Any]]:
     try:
         raw = header_path.read_text(encoding="utf-8")
@@ -1441,20 +1471,35 @@ def parse_c_header(
         )
         parser_info["parse_mode"] = "api_call_macro_match"
 
-    functions: dict[str, dict[str, str]] = {}
-    for match in pattern.finditer(declaration_content):
-        name = match.group("name")
-        if symbol_prefix and not name.startswith(symbol_prefix):
-            continue
-        return_type = sanitize_c_decl_text(match.group("ret"))
-        return_type = re.sub(r"^\s*extern\s+", "", return_type)
-        params = sanitize_c_decl_text(match.group("params"))
-        signature = f"{return_type} ({params})"
-        functions[name] = {
-            "return_type": return_type,
-            "parameters": params,
-            "signature": signature,
-        }
+    def _extract_functions_from_content(content: str) -> dict[str, dict[str, str]]:
+        out: dict[str, dict[str, str]] = {}
+        for m in pattern.finditer(content):
+            fn_name = m.group("name")
+            if symbol_prefix and not fn_name.startswith(symbol_prefix):
+                continue
+            ret = sanitize_c_decl_text(m.group("ret"))
+            ret = re.sub(r"^\s*extern\s+", "", ret)
+            params = sanitize_c_decl_text(m.group("params"))
+            out[fn_name] = {
+                "return_type": ret,
+                "parameters": params,
+                "signature": f"{ret} ({params})",
+            }
+        return out
+
+    functions: dict[str, dict[str, str]] = _extract_functions_from_content(declaration_content)
+
+    # Merge symbols from additional (included) headers
+    included_header_paths: list[str] = []
+    if additional_headers:
+        for inc_path in additional_headers:
+            included_header_paths.append(str(inc_path))
+            try:
+                inc_raw = inc_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            inc_content = strip_c_comments(re.sub(r"^\s*#.*?$", "", inc_raw, flags=re.M))
+            functions.update(_extract_functions_from_content(inc_content))
 
     if not functions:
         raise AbiFrameworkError(
@@ -1477,6 +1522,7 @@ def parse_c_header(
 
     header_payload = {
         "path": str(header_path),
+        "included_headers": included_header_paths,
         "function_count": len(functions),
         "symbols": sorted(functions.keys()),
         "functions": {name: functions[name] for name in sorted(functions.keys())},

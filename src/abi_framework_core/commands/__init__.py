@@ -21,12 +21,17 @@ from .verification import (
 )
 from .bootstrap import command_bootstrap
 from .status import command_status
+from .watch import command_watch
+from .new_plugin import command_new_plugin
+from .test_plugin import command_test_plugin
+from .ci_config import command_ci_config
 
 __all__ = [
     "command_benchmark",
     "command_benchmark_gate",
     "command_bootstrap",
     "command_changelog",
+    "command_ci_config",
     "command_codegen",
     "command_diff",
     "command_doctor",
@@ -36,6 +41,7 @@ __all__ = [
     "command_generate_rust_ffi",
     "command_init_target",
     "command_list_targets",
+    "command_new_plugin",
     "command_regen_baselines",
     "command_release_prepare",
     "command_scaffold_managed_api",
@@ -43,8 +49,10 @@ __all__ = [
     "command_snapshot",
     "command_status",
     "command_sync",
+    "command_test_plugin",
     "command_validate_plugin_manifest",
     "command_verify",
     "command_verify_all",
     "command_waiver_audit",
+    "command_watch",
 ]

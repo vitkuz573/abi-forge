@@ -74,6 +74,16 @@ def command_verify(args: argparse.Namespace) -> int:
         write_sarif_report(Path(args.sarif_report).resolve(), sarif_results)
 
     print_report(report)
+    if getattr(args, "output_format", "text") == "annotations":
+        source_path = None
+        current_header = current.get("header")
+        if isinstance(current_header, dict):
+            path_val = current_header.get("path")
+            if isinstance(path_val, str):
+                source_path = path_val
+        annotation_text = format_annotations_for_github(report, source_path)
+        if annotation_text:
+            print(annotation_text)
     status_ok = report.get("status") == "pass"
     effective_fail_on_warnings = bool(args.fail_on_warnings) or bool(effective_policy.get("fail_on_warnings", False))
     if status_ok and effective_fail_on_warnings:
@@ -177,6 +187,10 @@ def command_verify_all(args: argparse.Namespace) -> int:
                 source_path=source_path,
             )
         )
+        if getattr(args, "output_format", "text") == "annotations":
+            annotation_text = format_annotations_for_github(report, source_path)
+            if annotation_text:
+                print(annotation_text)
 
     aggregate["summary"] = build_aggregate_summary(aggregate["results"])
 

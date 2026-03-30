@@ -262,6 +262,19 @@ def build_snapshot(config: dict[str, Any], target_name: str, repo_root: Path, bi
         "patch": require_str(version_macros_cfg.get("patch"), "header.version_macros.patch"),
     }
 
+    follow_includes = bool(header_cfg.get("follow_includes", False))
+    max_include_depth = int(header_cfg.get("max_include_depth", 8))
+    additional_headers: list[Path] = []
+    if follow_includes:
+        seen: set[Path] = set()
+        additional_headers = _collect_local_includes(
+            header_path=header_path,
+            repo_root=repo_root,
+            depth=0,
+            max_depth=max_include_depth,
+            seen=seen,
+        )
+
     header_payload, abi_version, parser_info = parse_c_header(
         header_path=header_path,
         api_macro=api_macro,
@@ -270,6 +283,7 @@ def build_snapshot(config: dict[str, Any], target_name: str, repo_root: Path, bi
         version_macros=version_macros,
         type_policy=type_policy,
         parser_cfg=parser_cfg,
+        additional_headers=additional_headers if follow_includes else None,
     )
     header_payload["path"] = to_repo_relative(header_path, repo_root)
     header_payload["parser"] = parser_info

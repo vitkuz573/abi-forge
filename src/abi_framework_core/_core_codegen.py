@@ -1049,12 +1049,58 @@ def _resolve_external_command_template_for_generator(
         manifest_details = {
             "plugin_manifest": str(manifest_path),
             "plugin": str(selected_plugin.get("name") or "<unnamed>"),
+            "deterministic_output": bool(
+                (selected_plugin.get("capabilities") or {}).get("deterministic_output", False)
+            ),
         }
 
     if command_template is None:
         raise AbiFrameworkError(f"{context}: command template is not configured")
 
     return command_template, manifest_details
+
+
+def _generator_cache_path(repo_root: Path, target_name: str, generator_name: str) -> Path:
+    safe_name = re.sub(r"[^A-Za-z0-9_.\-]", "_", generator_name)
+    return repo_root / ".abi-forge-cache" / target_name / f"{safe_name}.gen.cache.json"
+
+
+def _compute_generator_fingerprint(rendered_cmd: list[str], idl_path: Path) -> str:
+    try:
+        idl_sha = hashlib.sha256(idl_path.read_bytes()).hexdigest()
+    except OSError:
+        idl_sha = ""
+    payload = json.dumps(
+        {
+            "cmd": rendered_cmd,
+            "idl_sha256": idl_sha,
+            "tool_version": TOOL_VERSION,
+            "idl_schema_version": IDL_SCHEMA_VERSION,
+        },
+        sort_keys=True,
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _read_generator_cache(cache_path: Path) -> dict[str, Any]:
+    try:
+        if cache_path.exists():
+            return json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def _write_generator_cache(cache_path: Path, fingerprint: str, result: dict[str, Any]) -> None:
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps({"fingerprint": fingerprint, "result": result}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # caching is best-effort
 
 
 def run_generator_entry(
@@ -1065,6 +1111,7 @@ def run_generator_entry(
     idl_path: Path,
     check: bool,
     dry_run: bool,
+    force_regen: bool = False,
 ) -> dict[str, Any]:
     name = str(generator.get("name") or "generator")
     kind = str(generator.get("kind") or "external")
@@ -1096,9 +1143,21 @@ def run_generator_entry(
                 current = current.replace(key, value)
             if current:
                 rendered.append(current)
+
+        # Check generator cache when deterministic and not in check/dry-run mode
+        deterministic = bool(manifest_details.get("deterministic_output", False))
+        if deterministic and not force_regen and not check and not dry_run:
+            cache_path = _generator_cache_path(repo_root, target_name, name)
+            fingerprint = _compute_generator_fingerprint(rendered, idl_path)
+            cached = _read_generator_cache(cache_path)
+            if cached.get("fingerprint") == fingerprint and isinstance(cached.get("result"), dict):
+                cached_result = dict(cached["result"])
+                cached_result["cached"] = True
+                return cached_result
+
         proc = subprocess.run(rendered, capture_output=True, text=True)
         status = "pass" if proc.returncode == 0 else "fail"
-        return {
+        result: dict[str, Any] = {
             "name": name,
             "kind": "external",
             "status": status,
@@ -1106,8 +1165,15 @@ def run_generator_entry(
             "stdout": proc.stdout.strip(),
             "stderr": proc.stderr.strip(),
             "exit_code": proc.returncode,
+            "cached": False,
             **manifest_details,
         }
+        # Write cache on success for deterministic generators (not check/dry-run)
+        if status == "pass" and deterministic and not check and not dry_run:
+            cache_path = _generator_cache_path(repo_root, target_name, name)
+            fingerprint = _compute_generator_fingerprint(rendered, idl_path)
+            _write_generator_cache(cache_path, fingerprint, result)
+        return result
 
     raise AbiFrameworkError(f"Unsupported generator kind '{kind}' for target '{target_name}'")
 
@@ -1120,6 +1186,7 @@ def run_code_generators_for_target(
     idl_path: Path,
     check: bool,
     dry_run: bool,
+    force_regen: bool = False,
 ) -> list[dict[str, Any]]:
     entries = normalize_generator_entries(
         repo_root=repo_root,
@@ -1136,6 +1203,7 @@ def run_code_generators_for_target(
                 idl_path=idl_path,
                 check=check,
                 dry_run=dry_run,
+                force_regen=force_regen,
             )
         except AbiFrameworkError as exc:
             result = {

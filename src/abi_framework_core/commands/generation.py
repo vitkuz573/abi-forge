@@ -102,6 +102,7 @@ def command_codegen(args: argparse.Namespace) -> int:
             idl_path=idl_path,
             check=bool(args.check),
             dry_run=bool(args.dry_run),
+            force_regen=bool(getattr(args, "force_regen", False)),
         )
         generator_failed = any(item.get("status") != "pass" for item in generator_results)
         if generator_failed:

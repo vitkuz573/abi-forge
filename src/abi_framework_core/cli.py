@@ -9,6 +9,7 @@ from .commands import (
     command_benchmark_gate,
     command_bootstrap,
     command_changelog,
+    command_ci_config,
     command_codegen,
     command_diff,
     command_doctor,
@@ -18,6 +19,7 @@ from .commands import (
     command_generate_rust_ffi,
     command_init_target,
     command_list_targets,
+    command_new_plugin,
     command_regen_baselines,
     command_release_prepare,
     command_scaffold_managed_api,
@@ -25,10 +27,12 @@ from .commands import (
     command_snapshot,
     command_status,
     command_sync,
+    command_test_plugin,
     command_validate_plugin_manifest,
     command_verify,
     command_verify_all,
     command_waiver_audit,
+    command_watch,
 )
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--markdown-report", help="Write verify report as Markdown.")
     verify.add_argument("--sarif-report", help="Write verify report as SARIF (for CI/code scanning).")
     verify.add_argument("--fail-on-warnings", action="store_true", help="Treat warnings as failures.")
+    verify.add_argument(
+        "--output-format",
+        choices=["text", "annotations"],
+        default="text",
+        help="Output format: text (default) or annotations (GitHub Actions inline annotations).",
+    )
     verify.set_defaults(func=command_verify)
 
     verify_all = sub.add_parser("verify-all", help="Verify all targets from config.")
@@ -83,6 +93,12 @@ def build_parser() -> argparse.ArgumentParser:
     verify_all.add_argument("--output-dir", help="Directory to write per-target current/report artifacts.")
     verify_all.add_argument("--sarif-report", help="Write aggregate SARIF report.")
     verify_all.add_argument("--fail-on-warnings", action="store_true", help="Treat warnings as failures.")
+    verify_all.add_argument(
+        "--output-format",
+        choices=["text", "annotations"],
+        default="text",
+        help="Output format: text (default) or annotations (GitHub Actions inline annotations).",
+    )
     verify_all.set_defaults(func=command_verify_all)
 
     regen = sub.add_parser("regen-baselines", help="Regenerate baseline snapshots for all targets.")
@@ -388,6 +404,72 @@ def build_parser() -> argparse.ArgumentParser:
     gen_baseline.add_argument("--target", default=None, help="Target name (optional; all targets if omitted).")
     gen_baseline.add_argument("--force", action="store_true", help="Overwrite existing baseline.")
     gen_baseline.set_defaults(func=command_generate_baseline)
+
+    # watch command
+    watch = sub.add_parser("watch", help="Watch header/metadata files and re-run on change.")
+    watch.add_argument("--repo-root", default=".", help="Repository root for relative path resolution.")
+    watch.add_argument("--config", required=True, help="Path to ABI config JSON.")
+    watch.add_argument("--target", default=None, help="Target name (optional; all targets if omitted).")
+    watch.add_argument(
+        "--command",
+        default="codegen",
+        choices=["codegen", "generate", "verify", "snapshot"],
+        help="Command to re-run on change (default: codegen).",
+    )
+    watch.add_argument("--skip-binary", action="store_true", help="Skip binary export extraction.")
+    watch.add_argument(
+        "--poll-interval",
+        type=float,
+        default=0.5,
+        help="File poll interval in seconds (default: 0.5).",
+    )
+    watch.set_defaults(func=command_watch)
+
+    # new-plugin command
+    new_plugin = sub.add_parser("new-plugin", help="Scaffold a new ABI generator plugin.")
+    new_plugin.add_argument("--name", required=True, help="Plugin name (e.g. mypkg.mygenerator).")
+    new_plugin.add_argument(
+        "--lang",
+        required=True,
+        choices=["python", "rust", "go"],
+        help="Generator language.",
+    )
+    new_plugin.add_argument("--version", default="0.1.0", help="Initial plugin version (default: 0.1.0).")
+    new_plugin.add_argument(
+        "--output-dir",
+        default=".",
+        help="Directory to write scaffolded files (default: current directory).",
+    )
+    new_plugin.set_defaults(func=command_new_plugin)
+
+    # test-plugin command
+    test_plugin = sub.add_parser("test-plugin", help="Run automated tests for an ABI generator plugin.")
+    test_plugin.add_argument("--manifest", required=True, help="Path to plugin.manifest.json.")
+    test_plugin.add_argument("--plugin", default=None, help="Plugin name within the manifest (optional if only one).")
+    test_plugin.add_argument("--idl", default=None, help="IDL JSON path (optional; synthetic IDL used if omitted).")
+    test_plugin.add_argument("--output", default=None, help="Write test report JSON to path.")
+    test_plugin.add_argument("--print-json", action="store_true", help="Print test report JSON.")
+    test_plugin.add_argument("--fail-on-warnings", action="store_true", help="Treat skipped checks as failures.")
+    test_plugin.set_defaults(func=command_test_plugin)
+
+    # ci-config command
+    ci_config = sub.add_parser("ci-config", help="Generate CI workflow configuration for ABI checks.")
+    ci_config.add_argument(
+        "--provider",
+        required=True,
+        choices=["github", "gitlab"],
+        help="CI provider.",
+    )
+    ci_config.add_argument("--config", default="abi/config.json", help="ABI config path used in the generated workflow.")
+    ci_config.add_argument("--output", default=None, help="Output file path (default: provider-specific).")
+    ci_config.add_argument("--skip-binary", action="store_true", help="Add --skip-binary to generated commands.")
+    ci_config.add_argument("--fail-on-warnings", action="store_true", help="Add --fail-on-warnings to generated commands.")
+    ci_config.add_argument(
+        "--pip-target",
+        default="abi-forge",
+        help="pip install target for abi-forge in the generated workflow (default: abi-forge).",
+    )
+    ci_config.set_defaults(func=command_ci_config)
 
     return parser
 
