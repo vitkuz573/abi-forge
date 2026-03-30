@@ -1,0 +1,61 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+      - "src/**"
+      - "abi_codegen_core/**"
+      - "generator_sdk/**"
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_publish: ${{ steps.check.outputs.should_publish }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: check
+        run: |
+          VERSION=$(python3 -c "
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              d = tomllib.load(f)
+          print(d['project']['version'])
+          ")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          PUBLISHED=$(pip index versions abi-forge 2>/dev/null | grep -oP '[\d.]+' | head -1 || echo "0.0.0")
+          if [ "$VERSION" != "$PUBLISHED" ]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    needs: check-version
+    if: needs.check-version.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/abi-forge
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        run: |
+          pip install build
+          python -m build
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
